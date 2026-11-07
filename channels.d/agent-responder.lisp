@@ -72,7 +72,12 @@
         (let ((*standard-output* out))
           (set-agent-env)
           (funcall (find-symbol "RUN" :mini-agent) task))
-        (let ((text (string-trim " \n\t" (get-output-stream-string out))))
+        (let* ((raw (get-output-stream-string out))
+               ;; drop one-time quicklisp/ASDF noise before the first [step
+               (stripped (if (search "[step" raw)
+                             (subseq raw (search "[step" raw))
+                             raw))
+               (text (string-trim " \n\t" stripped)))
           (if (plusp (length text))
               (values t text)
               (values nil "agent returned empty output"))))

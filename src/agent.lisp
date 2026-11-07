@@ -87,8 +87,14 @@
                (format nil "agent/~a" event)
                payload))))
 
+(defvar *source-truename* *load-truename*
+  "Where agent.lisp lives, captured at load; *load-truename* is dynamic and
+   nil by the time run/load-eventbus execute in a worker thread.")
+
 (defun load-eventbus ()
-  (let ((path (merge-pathnames "eventbus.lisp" (or *load-truename* *default-pathname-defaults*))))
+  (let ((path (merge-pathnames "eventbus.lisp"
+                               (or *load-truename* *source-truename*
+                                   *default-pathname-defaults*))))
     (when (probe-file path)
       (ignore-errors
         (load path)
