@@ -198,9 +198,10 @@ Task: ~a"
          :name "typing-heartbeat")))
 
 (defun stop-typing ()
-  (when (and *typing-thread* (sb-thread:thread-alive-p *typing-thread*))
-    (sb-thread:terminate-thread *typing-thread))
-  (setf *typing-thread* nil))
+  (when (boundp '*typing-thread*)
+    (when (and *typing-thread* (sb-thread:thread-alive-p *typing-thread*))
+      (ignore-errors (sb-thread:terminate-thread *typing-thread)))
+    (setf *typing-thread* nil)))
 
 (defun ensure-worker ()
   (sb-thread:with-mutex (*queue-lock*)
@@ -209,19 +210,24 @@ Task: ~a"
             (sb-thread:make-thread
              (lambda ()
                (loop
-                 (let ((job (queue-pop)))
-                   (if job
-                       (destructuring-bind (chat-id reply-to task) job
-                         (start-typing chat-id)
-                         (multiple-value-bind (ok text)
-                             (run-agent
-                              (format nil "~a~%Work in /Users/rook/mini-agent."
-                                      (memory-preamble chat-id task))))
-                           (stop-typing)
-                           (reply chat-id
-                                  (if ok text (format nil "&#9888; ~a" text))
-                                  reply-to)))
-                       (sleep 1))))
+                 (handler-case
+                     (let ((job (queue-pop)))
+                       (if job
+                           (destructuring-bind (chat-id reply-to task) job
+                             (start-typing chat-id)
+                             (multiple-value-bind (ok text)
+                                 (run-agent
+                                  (format nil "~a~%Work in /Users/rook/mini-agent."
+                                          (memory-preamble chat-id task))))
+                               (stop-typing)
+                               (reply chat-id
+                                      (if ok text (format nil "&#9888; ~a" text))
+                                      reply-to)))
+                           (sleep 1)))
+                   (error (e)
+                     (stop-typing)
+                     (format *error-output* "agent-worker: ~a~%" e)
+                     (sleep 2))))
              :name "agent-worker")))))
 
 (defun spawn-task (chat-id task &optional reply-to)
