@@ -15,10 +15,16 @@
 (defparameter *pid-file* (merge-pathnames "eventd.pid" *load-truename*))
 (defparameter *log* *standard-output*)
 
+;;; Heartbeat is a liveness tick, not an event. The 30s cadence proves the
+;;; process is alive for monitors; real events flow the instant they happen
+;;; (every publish writes straight through). Interval is env-tunable.
+(defparameter *beat-interval*
+  (parse-integer (or (uiop:getenv "EVENTD_BEAT_SECONDS") "30")))
+
 (defun heartbeat ()
   (loop
     (publish "eventd/beat" (list :ts (get-universal-time)))
-    (sleep 30)))
+    (sleep *beat-interval*)))
 
 (defun repl ()
   (loop
