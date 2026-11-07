@@ -301,7 +301,7 @@
                                              (cons :content out)))))))))))))
     ;; loop ended without final answer
     (when (plusp *max-steps*)
-      (format t "(step budget ~a exhausted)~%" *max-steps*)))
+      (format t "(step budget ~a exhausted)~%" *max-steps*))))
 
 (defun tool-callsp (x) (and (hash-table-p x) (ht-get x "function" nil)))
 
