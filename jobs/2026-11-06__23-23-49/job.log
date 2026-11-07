@@ -1,23 +1,0 @@
-Agent 'mini-agent' does not declare an options_model; leftover kwargs are ignored
-Skipping image OS validation for alexgshaw/fix-git:20260403: docker inspect returned 1
-Running command: apt-get update && apt-get install -y curl
-Command outputs captured
-Running command: set -e; export DEBIAN_FRONTEND=noninteractive; command -v sbcl >/dev/null || { apt-get update -qq && apt-get install -y -qq sbcl ca-certificates; }; if [ ! -f $HOME/.quicklisp/setup.lisp ]; then cd /tmp && curl -sO https://beta.quicklisp.org/quicklisp.lisp && sbcl --noinform --non-interactive --load quicklisp.lisp --eval '(quicklisp-quickstart:install)' >/dev/null && rm quicklisp.lisp; fi; sbcl --noinform --non-interactive --load $HOME/.quicklisp/setup.lisp --eval '(ql:quickload :com.inuoe.jzon)' --quit
-Command failed
-Trial fix-git__KyMFiJz failed: Command failed (exit 1): set -e; export DEBIAN_FRONTEND=noninteractive; command -v sbcl >/dev/null || { apt-get update -qq && apt-get install -y -qq sbcl ca-certificates; }; if [ ! -f $HOME/.quicklisp/setup.lisp ]; then cd /tmp && curl -sO https://beta.quicklisp.org/quicklisp.lisp && sbcl --noinform --non-interactive --load quicklisp.lisp --eval '(quicklisp-quickstart:install)' >/dev/null && rm quicklisp.lisp; fi; sbcl --noinform --non-interactive --load $HOME/.quicklisp/setup.lisp --eval '(ql:quickload :com.inuoe.jzon)' --quit
-stdout: debconf: delaying package configuration, since apt-utils is not installed
-Selecting previously unselected package libpipeline1:amd64.
-(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading databa ... [2348 chars truncated] ... MPLE-FILE-ERROR "~@<Couldn't load ~S: file does not exist.~@:>" {1001360963}>)
-3: (ERROR SB-INT:SIMPLE-FILE-ERROR :PATHNAME #P"/root/.quicklisp/setup.lisp" :FORMAT-CONTROL "~@<Couldn't load ~S: file does not exist.~@:>" :FORMAT-ARGUMENTS (#P"/root/.quicklisp/setup.lisp"))
-4: (LOAD #P"/root/.quicklisp/setup.lisp" :VERBOSE NIL :PRINT NIL :IF-DOES-NOT-EXIST :ERROR :EXTERNAL-FORMAT :DEFAULT)
-5: (SB-IMPL::PROCESS-EVAL/LOAD-OPTIONS ((:LOAD . "/root/.quicklisp/setup.lisp") (:EVAL . "(ql:quickload :com.inuoe.jzon)") (:QUIT)))
-6: (SB-IMPL::TOPLEVEL-INIT)
-7: ((FLET SB-UNIX::BODY :IN SB-IMPL::START-LISP))
-8: ((FLET "WITHOUT-INTERRUPTS-BODY-3" :IN SB-IMPL::START-LISP))
-9: (SB-IMPL::%START-LISP)
-
-unhandled condition in --disable-debugger mode, quitting
-
-stderr: None
-Collecting main service artifacts
-Not retrying trial because the maximum number of retries has been reached
