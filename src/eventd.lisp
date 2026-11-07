@@ -52,28 +52,6 @@
 ;;; 'claimed'/'pending' + next_at = awaiting (re)delivery with backoff.
 ;;; Each channel owns its own replay point; a restart resumes all independently.
 
-(defparameter *dispatch-db* (merge-pathnames "deliveries.db" (uiop:getcwd)))
-(defparameter *dispatch-poll-seconds*
-  (parse-integer (or (uiop:getenv "EVENTD_DISPATCH_POLL_SECONDS") "2")))
-(defparameter *dispatch-max-backoff*
-  (parse-integer (or (uiop:getenv "EVENTD_DISPATCH_MAX_BACKOFF") "300")))
-
-(defun ddb ()
-  (let ((c (sqlite:connect *dispatch-db*)))
-    (sqlite:execute-to-list c "PRAGMA busy_timeout=5000")
-    (sqlite:execute-to-list c "PRAGMA journal_mode=WAL")
-    c))
-
-(defun ensure-deliveries-schema ()
-  (let ((c (ddb)))
-    (sqlite:execute-non-query c
-      "CREATE TABLE IF NOT EXISTS deliveries (
-         channel TEXT NOT NULL, event_id INTEGER NOT NULL,
-         status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
-         next_at INTEGER NOT NULL DEFAULT 0,
-         PRIMARY KEY (channel, event_id))")
-    (sqlite:disconnect c)))
-
 (defmacro with-ddb ((conn) &body body)
   `(let ((,conn (ddb)))
      (unwind-protect (progn ,@body) (sqlite:disconnect ,conn))))
