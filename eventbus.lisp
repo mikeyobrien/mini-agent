@@ -21,8 +21,8 @@
 
 (defun db ()
   (let ((c (sqlite:connect *db-path*)))
-    (sqlite:execute-non-query c "PRAGMA journal_mode=WAL")
-    (sqlite:execute-non-query c "PRAGMA busy_timeout=5000")
+    (sqlite:execute-to-list c "PRAGMA busy_timeout=5000")
+    (sqlite:execute-to-list c "PRAGMA journal_mode=WAL")
     c))
 
 (defun ensure-schema ()
