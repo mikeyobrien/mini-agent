@@ -108,6 +108,35 @@ JSON is [`com.inuoe.jzon`](https://github.com/stylewarning/com.inuoe.jzon) —
 the only library dependency. Everything else is the standard library plus
 UIOP (bundled with SBCL).
 
+### The one Python file
+
+`agent-harbor.py` is **foreign-interface glue only**: Harbor loads benchmark
+agents as Python classes (`--agent-import-path module:Class`), so ~60 lines of
+IO shim (install sbcl/quicklisp in the container, upload the repo, exec
+`sbcl --script run.lisp "<task>"`) are required to enter that contract. All
+agent logic lives in `agent.lisp`; the adapter must never grow parsing, string
+processing, or behavior. See `AGENTS.md` for the language policy.
+
+## Terminal-Bench (harbor)
+
+Smoke-verified against [terminal-bench 2.1](https://github.com/harbor-framework/terminal-bench-2-1)
+via [harbor](https://github.com/harbor-framework/terminal-bench) with the
+bundled adapter (3/3 on the smoke subset, 1 attempt each, real endpoint):
+
+```bash
+docker run -d -p 2375:2375 ...   # or start Docker Desktop; harbor needs it
+uv tool install harbor
+git clone --depth 1 https://github.com/harbor-framework/terminal-bench-2-1
+
+MINI_AGENT_BASE_URL=http://host:PORT/v1 MINI_AGENT_MODEL=<id> \
+PYTHONPATH=. harbor run \
+  -p terminal-bench-2-1/tasks/fix-git \
+  -a agent-harbor:MiniAgentAgent -k 1 -n 1
+```
+
+Per-trial verdicts land in `jobs/<ts>/<task>__<id>/verifier/reward.txt`
+(`1` = resolved). Treat small-n runs as smoke, not scores.
+
 ## Extensions left as exercises
 
 - `git diff` extraction for SWE-bench-style patch capture
