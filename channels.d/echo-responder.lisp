@@ -82,10 +82,11 @@
 (defun loop! ()
   (loop
     (handler-case
-        (let ((events (eventbus:since *cursor* "telegram/inbound")))
-          (dolist (e events) (handle e))
-          (let ((last (and events (getf (car (last events)) :id))))
-            (when (and last (> last *cursor*)) (setf *cursor* last))))
+        (progn
+          (let ((events (eventbus:since *cursor* "telegram/inbound")))
+            (dolist (e events) (handle e))
+            (let ((last (and events (getf (car (last events)) :id))))
+              (when (and last (> last *cursor*)) (setf *cursor* last)))))
       (error (e)
         (format *error-output* "echo-responder: ~a~%" e)
         (sleep 5)))

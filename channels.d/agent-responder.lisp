@@ -164,6 +164,8 @@ Task: ~a"
 (defparameter *queue* nil)            ; alist (chat-id . task), front = next
 (defparameter *queue-max* 3)
 (defparameter *worker-thread* nil)
+(defparameter *current-chat* nil
+  "Chat of the task in flight; read by progress-notifier.")
 
 (defun queue-push (chat-id task &optional reply-to)
   (sb-thread:with-mutex (*queue-lock*)
@@ -176,7 +178,7 @@ Task: ~a"
                  (if (plusp (length *queue*))
                      (format nil "queued (~a/~a): ~a" (1+ (length *queue*)) *queue-max*
                              (subseq task 0 (min 60 (length task))))
-                     (format nil "&#9888; working: ~a" (subseq task 0 (min 60 (length task))))))
+                     (format nil "⚠ working: ~a" (subseq task 0 (min 60 (length task))))))
           (setf *queue* (append *queue* (list (list chat-id reply-to task))))
           t))))
 
@@ -203,6 +205,12 @@ Task: ~a"
       (ignore-errors (sb-thread:terminate-thread *typing-thread)))
     (setf *typing-thread* nil)))
 
+(defun run-agent-bounded (full-task)
+  "Bounded by construction: MAX_STEPS * (step + http) budgets from .env.agent.
+No nested-thread join games - they deadlock on closure env in SBCL threads
+and swallow replies. Worst case ~6*(60+120)s; worker blocked but alive."
+  (run-agent full-task))
+
 (defun ensure-worker ()
   (sb-thread:with-mutex (*queue-lock*)
     (when (or (null *worker-thread*) (not (sb-thread:thread-alive-p *worker-thread*)))
@@ -214,14 +222,15 @@ Task: ~a"
                      (let ((job (queue-pop)))
                        (if job
                            (destructuring-bind (chat-id reply-to task) job
+                             (setf *current-chat* chat-id)
                              (start-typing chat-id)
                              (multiple-value-bind (ok text)
-                                 (run-agent
+                                 (run-agent-bounded
                                   (format nil "~a~%Work in /Users/rook/mini-agent."
                                           (memory-preamble chat-id task))))
                                (stop-typing)
                                (reply chat-id
-                                      (if ok text (format nil "&#9888; ~a" text))
+                                      (if ok text (format nil "⚠ ~a" text))
                                       reply-to)))
                            (sleep 1)))
                    (error (e)
@@ -276,19 +285,20 @@ Task: ~a"
 (defun loop! ()
   (loop
     (handler-case
-        (let ((events (eventbus:since *cursor* "telegram/inbound")))
-          (dolist (e events)
-            (let* ((data (getf e :data))
-                   (uid (jget data "update_id")))
-              (unless (and uid (seen-p uid))
-                (handle e)
-                (when uid (mark! uid)))))
-          (let ((last (and events (getf (car (last events)) :id))))
-            (when (and last (> last *cursor*)) (setf *cursor* last))))
+        (progn
+          (let ((events (eventbus:since *cursor* "telegram/inbound")))
+            (dolist (e events)
+              (let* ((data (getf e :data))
+                     (uid (jget data "update_id")))
+                (unless (and uid (seen-p uid))
+                  (handle e)
+                  (when uid (mark! uid)))))
+            (let ((last (and events (getf (car (last events)) :id))))
+              (when (and last (> last *cursor*)) (setf *cursor* last))))
+          (sleep *poll-seconds*))
       (error (e)
         (format *error-output* "agent-responder: ~a~%" e)
-        (sleep 5)))
-    (sleep *poll-seconds*)))
+        (sleep 5)))))
 
 (defun boot ()
   (setf *env* (load-env))

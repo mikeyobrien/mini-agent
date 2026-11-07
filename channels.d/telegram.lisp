@@ -46,19 +46,29 @@
           (error "telegram api ~a failed: ~a" method out))
         (gethash "result" resp)))))
 
-;;; --- outbound ----------------------------------------------------------------
 
-(defun jget (h k) (and (hash-table-p h) (gethash k h)))
+;;; --- chunking (P1 #5) ---------------------------------------------------------
 
-(defun send-payload (method payload)
-  "Send with Markdown, fall back to plain on parse failure (P1 #6)."
-  (handler-case (api method payload)
-    (error (e)
-      ;; retry once without parse_mode; if that fails too, propagate
-      (let ((h (copy-hash-table payload)))
-        (remhash "parse_mode" h)
-        (format *error-output* "chan-telegram markdown retry: ~a~%" e)
-        (api method h)))))
+(defparameter +tg-chunk+ 4088
+  "Per-message budget; headroom below the 4096 API limit for suffixes.")
+
+(defun para-cut (text from to)
+  "Largest c in [from+2,to] with a blank line ending at c, else nil."
+  (loop for c from to downto (+ 2 from)
+        when (and (char= #\Newline (char text (1- c)))
+                  (char= #\Newline (char text (- c 2))))
+          return c))
+
+(defun chunk-text (text &optional (limit +tg-chunk+))
+  (if (or (null text) (<= (length text) limit))
+      (list text)
+      (let ((out nil) (pos 0) (n (length text)))
+        (loop while (< pos n)
+              for hard = (min n (+ pos limit))
+              for end = (or (and (< hard n) (para-cut text pos hard)) hard)
+              do (push (subseq text pos end) out)
+                 (setf pos end))
+        (nreverse out))))
 
 (defun copy-hash-table (h)
   (let ((n (make-hash-table :test 'equal)))
@@ -75,8 +85,19 @@
                  (gethash "action" h) "typing")
            h))))
 
+;;; --- outbound ----------------------------------------------------------------
+
+(defun send-payload (method payload)
+  "Markdown first; plain retry on entity-parse failure (P1 #6)."
+  (handler-case (api method payload)
+    (error (e)
+      (let ((h (copy-hash-table payload)))
+        (remhash "parse_mode" h)
+        (format *error-output* "chan-telegram markdown retry: ~a~%" e)
+        (api method h)))))
+
 (defun outbound-dispatch (id ts topic data)
-  "telegram/* -> Bot API. Returns T when handled; nil/raise => retry."
+  "telegram/* -> Bot API. T handled; nil/raise => delivery retry."
   (declare (ignore id ts))
   (cond
     ((equal topic "telegram/outbound")
@@ -84,23 +105,26 @@
            (chat (jget data "chat_id")))
        (unless (and text chat)
          (error "telegram/outbound needs text+chat_id"))
-       (send-payload "sendMessage"
-            (let ((h (make-hash-table :test 'equal)))
-              (setf (gethash "chat_id" h) chat
-                    (gethash "text" h) text
-                    (gethash "parse_mode" h) "Markdown")
-              (let ((thread (jget data "thread_id")))
-                (when thread
-                  (setf (gethash "message_thread_id" h) thread)))
-              (let ((reply-to (jget data "reply_to")))
-                (when reply-to
-                  (setf (gethash "reply_to_message_id" h) reply-to)))
-              h)))
-     t)
+       (let* ((chunks (chunk-text text))
+              (n (length chunks))
+              (base (make-hash-table :test 'equal)))
+         (setf (gethash "chat_id" base) chat
+               (gethash "parse_mode" base) "Markdown")
+         (let ((thread (jget data "thread_id")))
+           (when thread (setf (gethash "message_thread_id" base) thread)))
+         (let ((reply-to (jget data "reply_to")))
+           (when reply-to (setf (gethash "reply_to_message_id" base) reply-to)))
+         (loop for i from 1
+               for chunk in chunks
+               do (let ((h (copy-hash-table base)))
+                    (setf (gethash "text" h)
+                          (if (> n 1) (format nil "~a (~a/~a)" chunk i n) chunk))
+                    (send-payload "sendMessage" h))))
+       t))
     ((equal topic "telegram/typing")
      (typing (jget data "chat_id"))
      t)
-    (t nil)))          ; other telegram/* topics: nothing to do, success
+    (t nil)))
 
 (defun register! ()
   (chanreg:register "telegram" "telegram/*" #'outbound-dispatch #'inbound-loop))
@@ -124,18 +148,18 @@
                   (let ((msg (jget u "message")))
                     (when msg
                       (eventbus:publish "telegram/inbound"
-                               (let ((h (make-hash-table :test 'equal)))
-                                 (setf (gethash "update_id" h) (jget u "update_id")
-                                       (gethash "chat_id" h)
-                                       (jget (jget msg "chat") "id")
-                                       (gethash "text" h) (jget msg "text")
-                                       (gethash "from" h) (jget msg "from")
-                                       (gethash "message_id" h) (jget msg "message_id"))
-                                 h)))))))
+                                        (let ((h (make-hash-table :test 'equal)))
+                                          (setf (gethash "update_id" h) (jget u "update_id")
+                                                (gethash "chat_id" h)
+                                                (jget (jget msg "chat") "id")
+                                                (gethash "text" h) (jget msg "text")
+                                                (gethash "from" h) (jget msg "from")
+                                                (gethash "message_id" h) (jget msg "message_id"))
+                                          h)))))
       (error (e)
         (format *error-output* "chan-telegram inbound: ~a~%" e)
-        (sleep 5)))))
+        (sleep 5)))))))
 
-;;; --- self-registration ---------------------------------------------------------
+;;; --- self-registration -------------------------------------------------------
 
 (register!)

@@ -174,9 +174,12 @@
 
 (defun heartbeat ()
   (loop
-    ;; Never let a transient sqlite busy kill the liveness thread.
-    (handler-case (publish "eventd/beat" (list :ts (get-universal-time)))
-      (error (e) (format *error-output* "heartbeat: ~a~%" e)))
+    ;; Never let anything kill the liveness thread: catch, log, continue.
+    (handler-case
+        (progn (publish "eventd/beat" (list :ts (get-universal-time)))
+               #+nil (format *error-output* "beat ok~%"))
+      (error (e) (format *error-output* "heartbeat: ~a~%" e))
+      (serious-condition (e) (format *error-output* "heartbeat serious: ~a~%" e)))
     (sleep *beat-interval*)))
 
 (defun repl ()
@@ -214,8 +217,11 @@
                                :name (format nil "~a-start" (chanreg:channel-name ch)))))
     (repl)
     ;; stdin exhausted (daemon/redirect mode): keep serving beats + bus forever
-    (sb-thread:join-thread hb)
-    (sb-thread:join-thread dp)))
+    ;; A dead side thread must not kill the daemon: log and keep serving.
+    (ignore-errors (sb-thread:join-thread hb))
+    (ignore-errors (sb-thread:join-thread dp))
+    ;; If heartbeat died, run it inline so liveness continues.
+    (loop (funcall #'heartbeat))))
 
 (defun stop ()
   (let ((pid (with-open-file (f *pid-file* :direction :input) (parse-integer (read-line f)))))
