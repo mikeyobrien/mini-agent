@@ -100,8 +100,8 @@ need no extra tool. Roots: `MINI_AGENT_SKILLS_PATH` first, then the repo's
 ```
 src/    agent.lisp eventbus.lisp eventd.lisp run.lisp agent-harbor.py
 skills/ <name>/SKILL.md — progressive-disclosure instructions
-test/   skills-test.lisp
-eval/   smoke.sh eventbus-test.lisp
+test/   smoke.sh eventbus-test.lisp skills-test.lisp
+eval/   o11y-report.lisp
 docs/   reference.md operations.md
 ``` 
 (one file per concern; `run.lisp`/adapters always resolved relative to their own location)

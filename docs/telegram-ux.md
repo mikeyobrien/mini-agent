@@ -61,7 +61,7 @@ impact per unit of work. P0/P1 are small, local diffs; P2/P3 slightly larger.
 
 ## Verification
 
-- `eval/` smoke path for daemon boot; then live: text -> ack <1s, typing
+- `test/` smoke path for daemon boot; then live: text -> ack <1s, typing
   during run, threaded answer; 5k-char answer arrives as chunks; kill
   markdown in a reply to see fallback; `/status` `/cancel` `/memory`.
 - No core edits required for P0-P2: telegram.lisp + agent-responder.lisp

@@ -8,7 +8,7 @@
 # Usage: test/smoke.sh            # run all cases
 #        test/smoke.sh basic      # one case, by name
 set -euo pipefail
-cd "$(dirname "$0")/.."   # repo root (eval/ -> ..)
+cd "$(dirname "$0")/.."   # repo root (test/ -> ..)
 
 # --- env check -------------------------------------------------------------
 : "${MINI_AGENT_BASE_URL:?MINI_AGENT_BASE_URL not set (e.g. http://host:8000/v1)}"

@@ -48,7 +48,7 @@ writing a consumer, or adding an event type).
 - `git status` clean before walking away; `jobs/`, `events.db*`,
   `eventd.pid`, `__pycache__/` are ignored — never `git add`ed.
 - One concern per commit, imperative subject. Push `origin master` when
-  `eval/smoke.sh` and affected pieces are green.
+  `test/smoke.sh` and affected pieces are green.
 - Long-lived daemons and repeated probes follow the operations runbook:
   [`docs/operations.md`](docs/operations.md) (start/stop, health checks,
   failure→fix table).
@@ -62,8 +62,8 @@ writing a consumer, or adding an event type).
 | `src/eventd.lisp` | resident bus daemon: stdin REPL + heartbeat |
 | `src/run.lisp` | entrypoint: sets AUTORUN, loads agent, calls `main` |
 | `src/agent-harbor.py` | harbor glue only (see *Language*) |
-| `eval/smoke.sh` | bounded live smoke suite — run after any change |
-| `eval/eventbus-test.lisp` | bus regression: publishers, glob, cursor |
+| `test/smoke.sh` | bounded live smoke suite — run after any change |
+| `test/eventbus-test.lisp` | bus regression: publishers, glob, cursor |
 | `test/skills-test.lisp` | skill discovery + prompt wiring regression |
 | `skills/<name>/SKILL.md` | skills listed in the system prompt (`rex` ships) |
 | `docs/reference.md` | API reference + payload/cursor contracts |
