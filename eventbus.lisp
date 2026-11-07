@@ -1,4 +1,4 @@
-;;;; evbus.lisp — the event bus, in the same language as everything else.
+;;;; eventbus.lisp — the event bus, in the same language as everything else.
 ;;;; Schema contract: events(id, ts, topic, payload-json). Any sqlite client speaks it.
 
 (eval-when (:load-toplevel :execute)
@@ -11,11 +11,11 @@
   (unless (find-package :com.inuoe.jzon)
     (funcall (find-symbol "QUICKLOAD" :ql) :com.inuoe.jzon)))
 
-(defpackage :evbus
+(defpackage :eventbus
   (:use :cl)
   (:export #:ensure-schema #:publish #:since #:*db-path*)
   (:import-from :com.inuoe.jzon #:parse #:stringify))
-(in-package :evbus)
+(in-package :eventbus)
 
 (defvar *db-path* (merge-pathnames "events.db" (or *load-truename* *default-pathname-defaults*)))
 
