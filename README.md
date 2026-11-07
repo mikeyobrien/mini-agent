@@ -79,15 +79,28 @@ Everything is env-driven (12-factor); no endpoints or model names are baked in.
 | `MINI_AGENT_THINKING` | `enabled` | `off` \| `enabled` (budget 16384) \| `enabled:N` |
 | `MINI_AGENT_SYSTEM_MD` | `SYSTEM.md` | system-prompt path, resolved against cwd |
 | `MINI_AGENT_AUTORUN` | unset | set to run `main` at load (script wrappers) |
+| `MINI_AGENT_SKILLS_PATH` | *(empty)* | extra skill roots, `:`-separated, searched before `skills/` (e.g. `~/.agents/skills`) |
 
 Truncation keeps head + tail with a `...N chars elided...` marker —
 [mini-swe-agent's observation template](https://github.com/SWE-agent/mini-swe-agent/blob/main/src/minisweagent/config/mini.yaml).
 Looser caps resolve more at flat cost; tune `MAX_OUTPUT` up for big-build repos.
 
+## Skills
+
+A skill is `<root>/<name>/SKILL.md` with `name` / `description` frontmatter,
+the same layout Claude Code, Codex and Pi use. Each run lists every
+discovered skill (name, description, absolute path) at the end of the
+system prompt. The model `cat`s a SKILL.md when a task matches it, so skills
+need no extra tool. Roots: `MINI_AGENT_SKILLS_PATH` first, then the repo's
+`skills/`; the first skill found under a name wins. Shipped: `skills/rex`
+(drives the Rex terminal through `rex skill show`).
+
 ## Repository layout
 
 ```
 src/    agent.lisp eventbus.lisp eventd.lisp run.lisp agent-harbor.py
+skills/ <name>/SKILL.md — progressive-disclosure instructions
+test/   skills-test.lisp
 eval/   smoke.sh eventbus-test.lisp
 docs/   reference.md operations.md
 ``` 

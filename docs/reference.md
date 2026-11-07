@@ -37,6 +37,7 @@ the answer), or exhaustes `*max-steps*` when it's nonzero. Side effects:
 | `*trunc-head*` / `*trunc-tail*` | `..._TRUNC_HEAD/TAIL` | 10000 / 10000 |
 | `*thinking*` | `MINI_AGENT_THINKING` | `enabled` |
 | `*system-prompt-path*` | `MINI_AGENT_SYSTEM_MD` | `SYSTEM.md` |
+| `*skills-path*` | `MINI_AGENT_SKILLS_PATH` | empty (repo `skills/` only) |
 
 `*thinking*` accepts `off`/`false`/empty (disabled), `enabled` (budget 16384),
 `enabled:N` (budget N), or a raw JSON snippet spliced into
@@ -52,6 +53,17 @@ wrapped — telemetry failures never fail a run. Payloads are JSON objects
 #### `load-eventbus` — function `()`
 Loads sibling `eventbus.lisp` if present, sets `*eventbus*`, calls
 `eventbus:ensure-schema`. Fully optional; silent no-op otherwise.
+
+### Skills
+
+- `discover-skills ()` — `(name description path)` for each `<root>/<dir>/SKILL.md`
+  across `skill-roots` (env roots, then `<repo>/skills/`), dirs sorted, first
+  name wins; skills without `name` or `description` are skipped.
+- `parse-frontmatter (text)` — top-level `key: value` alist; quoted scalars,
+  `>`/`|` blocks; nested maps ignored.
+- `skills-prompt (skills)` — the `## Skills` section; `run` binds it to
+  `*skills-section*` once per run and `build-request` appends it to SYSTEM.md.
+- Regression: `timeout 60 sbcl --script test/skills-test.lisp`.
 
 ### Internals worth knowing
 

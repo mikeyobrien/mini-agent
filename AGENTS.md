@@ -64,5 +64,7 @@ writing a consumer, or adding an event type).
 | `src/agent-harbor.py` | harbor glue only (see *Language*) |
 | `eval/smoke.sh` | bounded live smoke suite — run after any change |
 | `eval/eventbus-test.lisp` | bus regression: publishers, glob, cursor |
+| `test/skills-test.lisp` | skill discovery + prompt wiring regression |
+| `skills/<name>/SKILL.md` | skills listed in the system prompt (`rex` ships) |
 | `docs/reference.md` | API reference + payload/cursor contracts |
 | `docs/operations.md` | runbook: daemon lifecycle, health, failure triage |

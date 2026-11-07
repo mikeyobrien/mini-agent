@@ -70,6 +70,10 @@
 
 (defparameter *system-prompt-path* (env-str "MINI_AGENT_SYSTEM_MD" "SYSTEM.md"))
 
+;; Extra skill roots, colon-separated, searched before the repo's skills/.
+;; e.g. MINI_AGENT_SKILLS_PATH=~/.agents/skills to share Codex/Pi skills.
+(defparameter *skills-path* (env-str "MINI_AGENT_SKILLS_PATH" ""))
+
 ;;; ---------------------------------------------------------------------------
 ;;; JSON: com.inuoe.jzon (parse/stringify imported above).
 ;;; Values: objects hash-tables, arrays vectors, true/false t/nil, null :null.
@@ -174,7 +178,10 @@ Symbols become downcased names sans colon; strings pass through."
                   (dict :model *model*
                         :messages (append
                                     (list (dict :role "system"
-                                                :content (slurp-system-md)))
+                                                :content (concatenate
+                                                          'string
+                                                          (slurp-system-md)
+                                                          (or *skills-section* ""))))
                                     msgs)
                         :tools (vector (tool-schema))
                         :tool_choice "auto")))
@@ -268,7 +275,8 @@ Symbols become downcased names sans colon; strings pass through."
 (defun run (task)
   (load-eventbus)
   (emit "start" (dict :task task))
-  (let ((history
+  (let ((*skills-section* (skills-prompt (discover-skills)))
+        (history
           (list (list (cons :role "user") (cons :content task)))))
     (loop for step from 1 do
       (let* ((msg (query-lm history))
@@ -330,7 +338,7 @@ Symbols become downcased names sans colon; strings pass through."
                 calls))))
 
 (defun slurp-system-md ()
-  (let* ((src-dir (or *load-truename* *default-pathname-defaults*))
+  (let* ((src-dir (src-dir))
          (repo-root (make-pathname :directory (butlast (pathname-directory src-dir))))
          (candidates (list (merge-pathnames *system-prompt-path* (uiop:getcwd))
                            (merge-pathnames *system-prompt-path* src-dir)
@@ -340,6 +348,97 @@ Symbols become downcased names sans colon; strings pass through."
     (if (probe-file path)
         (uiop:read-file-string path)
         (error "system prompt ~a not found in ~a" *system-prompt-path* (uiop:getcwd)))))
+
+(defun src-dir ()
+  ;; *load-truename* is nil in worker threads (agent-responder); fall back
+  ;; to the truename captured at load.
+  (uiop:pathname-directory-pathname
+   (or *load-truename* *source-truename* *default-pathname-defaults*)))
+
+;;; --- Skills -----------------------------------------------------------------
+;;; A skill is <root>/<name>/SKILL.md with YAML-ish frontmatter (name,
+;;; description) — the agentskills layout Claude Code / Codex / Pi share.
+;;; Progressive disclosure: only name + description + path reach the system
+;;; prompt; the model `cat`s SKILL.md when a task calls for it. No new tool.
+
+(defun skill-roots ()
+  "MINI_AGENT_SKILLS_PATH entries first, then <repo>/skills/. Earlier wins."
+  (append
+   (loop for p in (uiop:split-string *skills-path* :separator ":")
+         unless (string= p "")
+           collect (uiop:ensure-directory-pathname
+                    (if (uiop:string-prefix-p "~/" p)
+                        (merge-pathnames (subseq p 2) (user-homedir-pathname))
+                        p)))
+   (list (make-pathname :directory (append (butlast (pathname-directory (src-dir)))
+                                           '("skills"))
+                        :defaults (src-dir)))))
+
+(defun parse-frontmatter (text)
+  "Top-level `key: value` pairs between leading --- fences, as an alist of
+strings. Handles quoted scalars and folded (>) / literal (|) blocks; nested
+maps are skipped. NIL when there is no frontmatter."
+  (let ((lines (uiop:split-string text :separator '(#\Newline))))
+    (when (string= (string-right-trim '(#\Return) (or (first lines) "")) "---")
+      (let ((pairs '()) (block-key nil) (block-lines '()))
+        (flet ((flush ()
+                 (when block-key
+                   (push (cons block-key (format nil "~{~a~^ ~}" (reverse block-lines))) pairs)
+                   (setf block-key nil block-lines '()))))
+          (dolist (raw (rest lines))
+            (let ((line (string-right-trim '(#\Return #\Space) raw)))
+              (cond
+                ((string= line "---") (flush) (return))
+                ((and block-key (plusp (length line)) (char= (char line 0) #\Space))
+                 (push (string-trim " " line) block-lines))
+                ((and (plusp (length line)) (char/= (char line 0) #\Space) (find #\: line))
+                 (flush)
+                 (let* ((colon (position #\: line))
+                        (key (string-trim " " (subseq line 0 colon)))
+                        (val (string-trim " " (subseq line (1+ colon)))))
+                   (cond
+                     ((member val '(">" "|" ">-" "|-") :test #'string=)
+                      (setf block-key key))
+                     ((string= val "") nil) ; nested map: not ours
+                     (t
+                      (when (and (>= (length val) 2)
+                                 (member (char val 0) '(#\" #\'))
+                                 (char= (char val 0) (char val (1- (length val)))))
+                        (setf val (subseq val 1 (1- (length val)))))
+                      (push (cons key val) pairs)))))))))
+        (nreverse pairs)))))
+
+(defun discover-skills ()
+  "List of (name description path) across skill-roots; first name wins.
+Skills missing a name or description are skipped — undescribed skills
+can't be chosen."
+  (let ((seen (make-hash-table :test 'equal)) (out '()))
+    (dolist (root (skill-roots))
+      (dolist (dir (sort (ignore-errors (uiop:subdirectories root)) #'string<
+                         :key #'namestring))
+        (let ((md (probe-file (merge-pathnames "SKILL.md" dir))))
+          (when md
+            (let* ((fm (ignore-errors (parse-frontmatter (uiop:read-file-string md))))
+                   (name (cdr (assoc "name" fm :test #'string=)))
+                   (desc (cdr (assoc "description" fm :test #'string=))))
+              (when (and name desc (not (gethash name seen)))
+                (setf (gethash name seen) t)
+                (push (list name desc (namestring md)) out)))))))
+    (nreverse out)))
+
+(defun skills-prompt (skills)
+  "System-prompt section listing SKILLS; empty string when none."
+  (if (null skills)
+      ""
+      (format nil "~%~%## Skills~%~%~
+Skills are instruction files for specific tools and tasks. When a task ~
+matches a skill's description, `cat` its SKILL.md first and follow it. ~
+Paths inside a skill are relative to its SKILL.md's directory.~%~%~
+~:{- **~a**: ~a (`~a`)~%~}"
+              skills)))
+
+(defvar *skills-section* nil
+  "Rendered skills section; computed once per run, appended to SYSTEM.md.")
 
 (defun main ()
   (unless *base-url*
