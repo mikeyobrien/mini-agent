@@ -1,5 +1,7 @@
+__pycache__/
+*.db
+*.pyc
 events.db
 events.db-*
-*.db
-jobs/
 events.db*
+jobs/
