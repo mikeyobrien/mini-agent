@@ -50,6 +50,31 @@
 
 (defun jget (h k) (and (hash-table-p h) (gethash k h)))
 
+(defun send-payload (method payload)
+  "Send with Markdown, fall back to plain on parse failure (P1 #6)."
+  (handler-case (api method payload)
+    (error (e)
+      ;; retry once without parse_mode; if that fails too, propagate
+      (let ((h (copy-hash-table payload)))
+        (remhash "parse_mode" h)
+        (format *error-output* "chan-telegram markdown retry: ~a~%" e)
+        (api method h)))))
+
+(defun copy-hash-table (h)
+  (let ((n (make-hash-table :test 'equal)))
+    (when (hash-table-p h)
+      (maphash (lambda (k v) (setf (gethash k n) v)) h))
+    n))
+
+(defun typing (chat-id)
+  "Best-effort typing indicator; never signals."
+  (ignore-errors
+    (api "sendChatAction"
+         (let ((h (make-hash-table :test 'equal)))
+           (setf (gethash "chat_id" h) chat-id
+                 (gethash "action" h) "typing")
+           h))))
+
 (defun outbound-dispatch (id ts topic data)
   "telegram/* -> Bot API. Returns T when handled; nil/raise => retry."
   (declare (ignore id ts))
@@ -59,7 +84,7 @@
            (chat (jget data "chat_id")))
        (unless (and text chat)
          (error "telegram/outbound needs text+chat_id"))
-       (api "sendMessage"
+       (send-payload "sendMessage"
             (let ((h (make-hash-table :test 'equal)))
               (setf (gethash "chat_id" h) chat
                     (gethash "text" h) text
@@ -67,7 +92,13 @@
               (let ((thread (jget data "thread_id")))
                 (when thread
                   (setf (gethash "message_thread_id" h) thread)))
+              (let ((reply-to (jget data "reply_to")))
+                (when reply-to
+                  (setf (gethash "reply_to_message_id" h) reply-to)))
               h)))
+     t)
+    ((equal topic "telegram/typing")
+     (typing (jget data "chat_id"))
      t)
     (t nil)))          ; other telegram/* topics: nothing to do, success
 

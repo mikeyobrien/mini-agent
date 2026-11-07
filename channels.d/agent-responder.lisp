@@ -100,11 +100,13 @@
               do (write-line line acc)))))
 
 
-(defun reply (chat-id text)
+(defun reply (chat-id text &optional reply-to)
   (eventbus:publish "telegram/outbound"
                     (let ((h (make-hash-table :test 'equal)))
                       (setf (gethash "chat_id" h) chat-id
                             (gethash "text" h) text)
+                      (when reply-to
+                        (setf (gethash "reply_to" h) reply-to))
                       h)))
 
 ;;; --- worker -------------------------------------------------------------------
@@ -163,20 +165,42 @@ Task: ~a"
 (defparameter *queue-max* 3)
 (defparameter *worker-thread* nil)
 
-(defun queue-push (chat-id task)
+(defun queue-push (chat-id task &optional reply-to)
   (sb-thread:with-mutex (*queue-lock*)
     (if (>= (length *queue*) *queue-max*)
         (progn (reply chat-id (format nil "queue full (~a) - task dropped." *queue-max*))
                nil)
         (progn
-          (setf *queue* (append *queue* (list (cons chat-id task))))
-          (when (> (length *queue*) 1)
-            (reply chat-id (format nil "queued (~a/~a)." (length *queue*) *queue-max*)))
+          ;; P0 ack on EVERY accept: user must never stare at silence.
+          (reply chat-id
+                 (if (plusp (length *queue*))
+                     (format nil "queued (~a/~a): ~a" (1+ (length *queue*)) *queue-max*
+                             (subseq task 0 (min 60 (length task))))
+                     (format nil "&#9888; working: ~a" (subseq task 0 (min 60 (length task))))))
+          (setf *queue* (append *queue* (list (list chat-id reply-to task))))
           t))))
 
 (defun queue-pop ()
   (sb-thread:with-mutex (*queue-lock*)
     (pop *queue*)))
+
+(defvar *typing-thread* nil)
+
+(defun start-typing (chat-id)
+  ;; One heartbeat at a time; a leftover from the previous task dies fast.
+  (stop-typing)
+  (setf *typing-thread*
+        (sb-thread:make-thread
+         (lambda ()
+           (loop repeat 120 do      ; bounded: <=8min of heartbeats
+                 (funcall (or (find-symbol "TYPING" :chan-telegram) (constantly nil)) chat-id)
+                 (sleep 4)))
+         :name "typing-heartbeat")))
+
+(defun stop-typing ()
+  (when (and *typing-thread* (sb-thread:thread-alive-p *typing-thread*))
+    (sb-thread:terminate-thread *typing-thread))
+  (setf *typing-thread* nil))
 
 (defun ensure-worker ()
   (sb-thread:with-mutex (*queue-lock*)
@@ -187,19 +211,22 @@ Task: ~a"
                (loop
                  (let ((job (queue-pop)))
                    (if job
-                       (let* ((chat-id (car job))
-                              (task (cdr job))
-                              (full (format nil "~a~%Work in /Users/rook/mini-agent."
-                                            (memory-preamble chat-id (format nil "~a" task)))))
-                         (multiple-value-bind (ok text) (run-agent full)
-                           (reply chat-id (if ok text (format nil "&#9888; ~a" text)))))
-                       (sleep 1)))
-               ))
+                       (destructuring-bind (chat-id reply-to task) job
+                         (start-typing chat-id)
+                         (multiple-value-bind (ok text)
+                             (run-agent
+                              (format nil "~a~%Work in /Users/rook/mini-agent."
+                                      (memory-preamble chat-id task))))
+                           (stop-typing)
+                           (reply chat-id
+                                  (if ok text (format nil "&#9888; ~a" text))
+                                  reply-to)))
+                       (sleep 1))))
              :name "agent-worker")))))
 
-(defun spawn-task (chat-id task)
+(defun spawn-task (chat-id task &optional reply-to)
   (ensure-worker)
-  (queue-push chat-id task))
+  (queue-push chat-id task reply-to))
 
 (defun handle (event)
   ;; Plain text converses with the agent (memory+queue, bounded). "! task"
@@ -208,12 +235,13 @@ Task: ~a"
          (text (and (jget data "text") (string-trim " \n\r" (jget data "text"))))
          (chat (jget data "chat_id")))
     (when (and text chat (plusp (length text)))
-      (cond
-        ((uiop:string-prefix-p "! " text)
-         (let ((task (string-trim " " (subseq text 2))))
-           (when (plusp (length task)) (spawn-task chat task))))
-        ((uiop:string-prefix-p "echo " text) nil) ; echo-responder mirrors these
-        (t (spawn-task chat text))))))
+      (let ((msg-id (jget data "message_id")))
+        (cond
+          ((uiop:string-prefix-p "! " text)
+           (let ((task (string-trim " " (subseq text 2))))
+             (when (plusp (length task)) (spawn-task chat task msg-id))))
+          ((uiop:string-prefix-p "echo " text) nil) ; echo-responder mirrors these
+          (t (spawn-task chat text msg-id)))))))
 
 (defun seen-db ()
   (merge-pathnames "agent_seen.db" (uiop:getcwd)))
