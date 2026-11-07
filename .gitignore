@@ -8,3 +8,4 @@ eventd.pid
 .env*
 deliveries.db*
 eventd.log
+state/

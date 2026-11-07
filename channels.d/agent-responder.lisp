@@ -95,6 +95,48 @@
 (defparameter *worker-lock* (sb-thread:make-mutex :name "agent-worker"))
 (defparameter *task-thread* nil)
 
+;;; --- per-chat scratchpad -------------------------------------------------------
+;;; state/<chat>.md: agent memory as a plain synced txt file. Prompt injects the
+;;; tail; the task asks the agent to append durable facts via echo >>. No db.
+
+(defun state-dir ()
+  (let ((d (merge-pathnames "state/" (uiop:getcwd))))
+    (ensure-directories-exist d)
+    d))
+
+(defun state-path (chat-id)
+  (merge-pathnames (format nil "~a.md" chat-id) (state-dir)))
+
+(defun state-tail (chat-id &optional (lines 30))
+  (ignore-errors
+    (with-open-file (f (state-path chat-id) :if-does-not-exist nil)
+      (when f
+        (let ((all (loop for line = (read-line f nil nil) while line collect line)))
+          (when (plusp (length all))
+            (let ((start (max 0 (- (length all) lines))))
+              (with-output-to-string (s2)
+                (dolist (l (subseq all start))
+                  (write-line l s2))))))))))
+
+(defun memory-preamble (chat-id task)
+  (let ((mem (and (probe-file (state-path chat-id))
+                  (string-trim " \n\r" (or (state-tail chat-id) "")))))
+    (if (plusp (length mem))
+        (format nil
+"Persistent memory (state/~a.md tail below). You MAY append durable facts with:
+  echo \"...one terse line...\" >> state/~a.md
+--- memory tail ---
+~a
+--- end ---
+Task: ~a"
+                chat-id chat-id mem task)
+        (format nil
+"No memory file yet. After the task, append one terse outcome line:
+  echo \"...~a: ...\" >> state/~a.md
+Task: ~a"
+                (subseq (format nil "~a" task) 0 (min 30 (length (format nil "~a" task))))
+                chat-id task))))
+
 ;;; --- bounded queue -----------------------------------------------------------
 ;;; Tasks wait instead of vanishing: depth 3, FIFO, oldest-first. The worker
 ;;; is persistent: it drains the queue, then idles on a condition-variable.
@@ -128,8 +170,11 @@
                (loop
                  (let ((job (queue-pop)))
                    (if job
-                       (let ((chat-id (car job)) (task (cdr job)))
-                         (multiple-value-bind (ok text) (run-agent task)
+                       (let* ((chat-id (car job))
+                              (task (cdr job))
+                              (full (format nil "~a~%Work in /Users/rook/mini-agent."
+                                            (memory-preamble chat-id (format nil "~a" task)))))
+                         (multiple-value-bind (ok text) (run-agent full)
                            (reply chat-id (if ok text (format nil "&#9888; ~a" text)))))
                        (sleep 1)))
                ))
