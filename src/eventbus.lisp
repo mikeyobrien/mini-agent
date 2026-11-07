@@ -14,7 +14,7 @@
 
 (defpackage :eventbus
   (:use :cl)
-  (:export #:ensure-schema #:publish #:since #:*db-path*)
+  (:export #:ensure-schema #:publish #:since #:*db-path* #:max-id)
   (:import-from :com.inuoe.jzon #:parse #:stringify))
 (in-package :eventbus)
 
@@ -38,6 +38,20 @@
     (sqlite:execute-non-query c "INSERT INTO events(topic,payload) VALUES (?,?)" topic (stringify payload))
     (let ((id (sqlite:last-insert-rowid c)))
       (sqlite:disconnect c) id)))
+
+(defun max-id (&optional topic-glob)
+  "Highest event id, optionally within TOPIC-GLOB -- tail cursor for consumers."
+  (let ((c (db)))
+    (unwind-protect
+         (let ((stmt (if topic-glob
+                         (sqlite:prepare-statement c "SELECT COALESCE(MAX(id),0) FROM events WHERE topic GLOB ?")
+                         (sqlite:prepare-statement c "SELECT COALESCE(MAX(id),0) FROM events"))))
+           (when topic-glob (sqlite:bind-parameter stmt 1 topic-glob))
+           (sqlite:step-statement stmt)
+           (let ((v (sqlite:statement-column-value stmt 0)))
+             (sqlite:finalize-statement stmt)
+             (or v 0)))
+      (sqlite:disconnect c))))
 
 (defun since (last-id &optional topic-glob)
   (let ((c (db)))

@@ -1,7 +1,10 @@
 ;;;; echo-responder.lisp -- consumer on telegram/inbound, replies via the bus.
 ;;;; Not a channel: a boot-hook thread that tails telegram/inbound and echoes
-;;;; each text back to its chat through telegram/outbound. Idempotent per
-;;;; update_id via its own cursor row in deliveries.db (channel='echo').
+;;;; each text back to its chat through telegram/outbound.
+;;;;
+;;;; Idempotency is by TELEGRAM update_id (the natural key of an update),
+;;;; stored in echo_seen(update_id) with a UNIQUE index -- re-delivered or
+;;;; re-injected events never double-reply, even across bus rebuilds.
 
 (require :uiop)
 
@@ -12,34 +15,44 @@
 (in-package :echo-responder)
 
 (defparameter *poll-seconds* 2)
-(defparameter *db* nil)              ; set at boot: deliveries.db path
-(defparameter *cursor* 0)            ; in-memory watermark, seeded from db
+(defparameter *db* nil)              ; deliveries.db path, set at boot
+(defparameter *cursor* 0)            ; bus watermark (event id), in-memory
 
 (defun jget (h k) (and (hash-table-p h) (gethash k h)))
 
-(defun seen-p (event-id)
-  (let ((c (sqlite:connect *db*)))
-    (unwind-protect
-         (progn
-           (sqlite:execute-to-list c "PRAGMA busy_timeout=5000")
-           (let ((stmt (sqlite:prepare-statement c
-                         "SELECT 1 FROM deliveries WHERE channel='echo' AND event_id=? AND status='sent'")))
-             (sqlite:bind-parameter stmt 1 event-id)
-             (prog1 (and (sqlite:step-statement stmt) t)
-               (sqlite:finalize-statement stmt))))
-      (sqlite:disconnect c))))
-
-(defun mark (event-id)
+(defun ensure-schema ()
   (let ((c (sqlite:connect *db*)))
     (unwind-protect
          (progn
            (sqlite:execute-to-list c "PRAGMA busy_timeout=5000")
            (sqlite:execute-non-query c
-             "INSERT INTO deliveries(channel,event_id,status,attempts,next_at)
-              VALUES ('echo',?,'sent',1,0)
-              ON CONFLICT(channel,event_id) DO UPDATE SET status='sent'"
-             event-id))
+             "CREATE TABLE IF NOT EXISTS echo_seen (
+                update_id INTEGER PRIMARY KEY,
+                ts TEXT DEFAULT (datetime('now')))")
+           (sqlite:execute-non-query c
+             "CREATE INDEX IF NOT EXISTS i_echo_ts ON echo_seen(ts)"))
       (sqlite:disconnect c))))
+
+(defun seen-p (update-id)
+  (and update-id
+       (let ((c (sqlite:connect *db*)))
+         (unwind-protect
+              (let ((stmt (sqlite:prepare-statement c
+                            "SELECT 1 FROM echo_seen WHERE update_id=?")))
+                (sqlite:bind-parameter stmt 1 update-id)
+                (prog1 (and (sqlite:step-statement stmt) t)
+                  (sqlite:finalize-statement stmt)))
+           (sqlite:disconnect c)))))
+
+(defun mark (update-id)
+  (when update-id
+    (let ((c (sqlite:connect *db*)))
+      (unwind-protect
+           (progn
+             (sqlite:execute-to-list c "PRAGMA busy_timeout=5000")
+             (sqlite:execute-non-query c
+               "INSERT OR IGNORE INTO echo_seen(update_id) VALUES (?)" update-id))
+        (sqlite:disconnect c)))))
 
 (defun reply (chat-id text)
   (eventbus:publish "telegram/outbound"
@@ -49,27 +62,20 @@
                       h)))
 
 (defun handle (event)
-  (let* ((id (getf event :id))
-         (data (getf event :data))
+  (let* ((data (getf event :data))
+         (update-id (jget data "update_id"))
          (text (jget data "text"))
          (chat (jget data "chat_id")))
-    (when (and text chat (not (seen-p id)))
-      ;; Echo with provenance; skip our own outbound echoes (they arrive as
-      ;; inbound only if someone re-feeds them, so no loop risk in practice).
+    ;; No update_id (synthetic/manual inject): still reply, but nothing to
+    ;; dedupe on -- accept the replay risk, it is test traffic by definition.
+    (when (and text chat (not (seen-p update-id)))
       (reply chat (format nil "~a" text))
-      (mark id)
-      (setf *cursor* (max *cursor* id)))))
+      (mark update-id))))
 
 (defun seed-cursor ()
-  ;; Start AFTER history: respond only to messages from now on.
-  (let ((c (sqlite:connect *db*)))
-    (unwind-protect
-         (let ((stmt (sqlite:prepare-statement c
-                       "SELECT COALESCE(MAX(event_id),0) FROM deliveries WHERE channel='echo'")))
-           (sqlite:step-statement stmt)
-           (setf *cursor* (or (sqlite:statement-column-value stmt 0) 0))
-           (sqlite:finalize-statement stmt))
-      (sqlite:disconnect c))))
+  "Start at the bus tail: respond only to inbound from now on. The echo_seen
+   table carries idempotency across restarts; the bus cursor does not persist."
+  (setf *cursor* (eventbus:max-id "telegram/inbound")))
 
 (defun loop! ()
   (loop
@@ -85,8 +91,9 @@
 
 (defun boot ()
   (setf *db* (merge-pathnames "deliveries.db" (uiop:getcwd)))
+  (ensure-schema)
   (seed-cursor)
-  (format *error-output* "echo-responder: up, cursor=~a~%" *cursor*)
+  (format *error-output* "echo-responder: up, bus-cursor=~a~%" *cursor*)
   (loop!))
 
 ;; self-register as a boot hook when loaded from channels.d/
