@@ -1,5 +1,5 @@
 ;;;; evbus.lisp — the event bus, in the same language as everything else.
-;;;; Same schema, same semantics as the python sketch. Deps: sqlite (quicklisp), com.inuoe.jzon.
+;;;; Schema contract: events(id, ts, topic, payload-json). Any sqlite client speaks it.
 
 (eval-when (:load-toplevel :execute)
   (unless (find-package :sqlite)
