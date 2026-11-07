@@ -114,14 +114,21 @@
       "UPDATE deliveries SET status='sent' WHERE channel=? AND event_id=?"
       name event-id)))
 
+(defparameter *max-attempts* 50)
+
 (defun requeue (name event-id attempts)
-  "Exponential backoff, capped: 2^n seconds."
-  (let ((delay (min (* 2 (expt 2 (min (or attempts 1) 16)))
-                    *dispatch-max-backoff*)))
-    (with-ddb (c)
-      (sqlite:execute-non-query c
-        "UPDATE deliveries SET status='pending',next_at=? WHERE channel=? AND event_id=?"
-        (+ (get-universal-time) delay) name event-id))))
+  "Exponential backoff, capped; poison events retired after MAX-ATTEMPTS."
+  (if (and attempts (>= attempts *max-attempts*))
+      (progn
+        (format *error-output* "dispatch ~a: event ~a retired after ~a attempts~%"
+                name event-id attempts)
+        (mark-sent name event-id))
+      (let ((delay (min (* 2 (expt 2 (min (or attempts 1) 16)))
+                        *dispatch-max-backoff*)))
+        (with-ddb (c)
+          (sqlite:execute-non-query c
+            "UPDATE deliveries SET status='pending',next_at=? WHERE channel=? AND event_id=?"
+            (+ (get-universal-time) delay) name event-id)))))
 
 (defun due-claims (name now)
   "Ids this channel may attempt now: claimed-then-crashed or backoff expired.
