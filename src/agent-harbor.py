@@ -17,7 +17,7 @@ from harbor.agents.installed.base import BaseInstalledAgent
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
-REPO = Path(__file__).resolve().parent
+REPO = Path(__file__).resolve().parent.parent  # repo root (adapter lives in src/)
 
 
 class MiniAgentAgent(BaseInstalledAgent):

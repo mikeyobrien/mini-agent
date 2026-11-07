@@ -1,7 +1,7 @@
-__pycache__/
-*.db
-*.pyc
 events.db
 events.db-*
-events.db*
+*.db
+*.pyc
+__pycache__/
 jobs/
+eventd.pid

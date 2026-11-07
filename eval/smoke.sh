@@ -8,7 +8,7 @@
 # Usage: test/smoke.sh            # run all cases
 #        test/smoke.sh basic      # one case, by name
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.."   # repo root (eval/ -> ..)
 
 # --- env check -------------------------------------------------------------
 : "${MINI_AGENT_BASE_URL:?MINI_AGENT_BASE_URL not set (e.g. http://host:8000/v1)}"
@@ -27,7 +27,7 @@ run_case() { # name expect_re seconds task
     return 0
   fi
   local out
-  if out=$(timeout "$tmo" sbcl --script run.lisp "$task" 2>&1); then
+  if out=$(timeout "$tmo" sbcl --script src/run.lisp "$task" 2>&1); then
     if [[ "$out" =~ $expect_re ]]; then
       echo "PASS $name"
       PASS=$((PASS+1)); return 0
@@ -61,7 +61,7 @@ for c in "${CASES[@]}"; do
     config)
       # 3. missing-env failure path: loud error, non-zero exit
       if env -u MINI_AGENT_BASE_URL MINI_AGENT_AUTORUN=1 timeout 20 \
-           sbcl --script run.lisp "x" >/tmp/mi-smoke-env.out 2>&1; then
+           sbcl --script src/run.lisp "x" >/tmp/mi-smoke-env.out 2>&1; then
         echo "FAIL config (missing-env run should exit non-zero)"
         FAIL=$((FAIL+1)); FAILED+=("config")
       elif grep -q "MINI_AGENT_BASE_URL not set" /tmp/mi-smoke-env.out; then

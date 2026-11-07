@@ -12,7 +12,7 @@
 (defpackage :eventd (:use :cl) (:import-from :eventbus #:publish #:since))
 (in-package :eventd)
 
-(defparameter *pid-file* (merge-pathnames "eventd.pid" *load-truename*))
+(defparameter *pid-file* (merge-pathnames "eventd.pid" (uiop:getcwd)))
 (defparameter *log* *standard-output*)
 
 ;;; Heartbeat is a liveness tick, not an event. The 30s cadence proves the

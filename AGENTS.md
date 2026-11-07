@@ -18,7 +18,7 @@ those two, it's a `.lisp` file.
 
 ## Verification ritual (the mistakes this file exists to prevent)
 
-1. **Before claiming anything runs:** `sbcl --script run.lisp "<real task>"`.
+1. **Before claiming anything runs:** `sbcl --script src/run.lisp "<real task>"`.
    Load-time silence is not success — check for `[step N]` output or the final
    answer line.
 2. **Before changing run/entry semantics:** remember `uiop:command-line-arguments`
@@ -38,15 +38,15 @@ those two, it's a `.lisp` file.
 - `git status` clean before walking away. `jobs/`, `events.db*`, `__pycache__/`
   are ignored — never `git add` them explicitly.
 - Commits: imperative, one concern. Push to `origin master` when green
-  (`test/smoke.sh` + affected pieces).
+  (`eval/smoke.sh` + affected pieces).
 
 ## Where things live
 
 | file | role |
 |---|---|
-| `agent.lisp` | the agent loop (bash tool, history, harbor-facing) |
-| `eventbus.lisp` | sqlite pub/sub (`eventbus:publish/since`) |
-| `eventd.lisp` | always-on bus daemon (stdin REPL + heartbeat) |
-| `run.lisp` | entry; sets AUTORUN, loads agent, invokes main |
-| `agent-harbor.py` | harbor glue ONLY (see above) |
-| `test/smoke.sh` | bounded live smoke suite |
+| `src/agent.lisp` | the agent loop (bash tool, history, harbor-facing) |
+| `src/eventbus.lisp` | sqlite pub/sub (`eventbus:publish/since`) |
+| `src/eventd.lisp` | always-on bus daemon (stdin REPL + heartbeat) |
+| `src/run.lisp` | entry; sets AUTORUN, loads agent, invokes main |
+| `src/agent-harbor.py` | harbor glue ONLY (see above) |
+| `eval/smoke.sh` | bounded live smoke suite |

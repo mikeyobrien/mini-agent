@@ -18,7 +18,8 @@
   (:import-from :com.inuoe.jzon #:parse #:stringify))
 (in-package :eventbus)
 
-(defvar *db-path* (merge-pathnames "events.db" (or *load-truename* *default-pathname-defaults*)))
+(defvar *db-path* (merge-pathnames "events.db" (uiop:getcwd))
+  "Bus location: the working directory of the process, not the source tree.")
 
 (defun db ()
   (let ((c (sqlite:connect *db-path*)))

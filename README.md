@@ -41,8 +41,8 @@ export MINI_AGENT_MODEL=my-model                       # exactly as /models repo
 ## Usage
 
 ```bash
-sbcl --script run.lisp "fix the failing test in foo.py"
-sbcl --script run.lisp                # prompts for the task
+sbcl --script src/run.lisp "fix the failing test in foo.py"
+sbcl --script src/run.lisp            # prompts for the task
 ```
 
 Watch it work:
@@ -57,7 +57,7 @@ Final answer text from the model.
 Programmatic:
 
 ```lisp
-(load "agent.lisp")                 ; after loading ~/quicklisp/setup.lisp
+(load "src/agent.lisp")            ; after loading ~/quicklisp/setup.lisp
 (setf *base-url* ...  *model* ...)  ; or rely on env
 (mini-agent::run "refactor the parser")
 ```
@@ -83,6 +83,15 @@ Everything is env-driven (12-factor); no endpoints or model names are baked in.
 Truncation keeps head + tail with a `...N chars elided...` marker —
 [mini-swe-agent's observation template](https://github.com/SWE-agent/mini-swe-agent/blob/main/src/minisweagent/config/mini.yaml).
 Looser caps resolve more at flat cost; tune `MAX_OUTPUT` up for big-build repos.
+
+## Repository layout
+
+```
+src/    agent.lisp eventbus.lisp eventd.lisp run.lisp agent-harbor.py
+eval/   smoke.sh eventbus-test.lisp
+docs/   reference.md operations.md
+``` 
+(one file per concern; `run.lisp`/adapters always resolved relative to their own location)
 
 ## Architecture
 

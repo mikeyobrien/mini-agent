@@ -274,11 +274,11 @@ Symbols become downcased names sans colon; strings pass through."
                 calls))))
 
 (defun slurp-system-md ()
-  (let* ((candidates (list (merge-pathnames *system-prompt-path* (uiop:getcwd))
-                           (merge-pathnames *system-prompt-path*
-                                            (make-pathname :directory (pathname-directory
-                                                                          (or *load-truename*
-                                                                              *default-pathname-defaults*))))))
+  (let* ((src-dir (or *load-truename* *default-pathname-defaults*))
+         (repo-root (make-pathname :directory (butlast (pathname-directory src-dir))))
+         (candidates (list (merge-pathnames *system-prompt-path* (uiop:getcwd))
+                           (merge-pathnames *system-prompt-path* src-dir)
+                           (merge-pathnames *system-prompt-path* repo-root)))
          (path (or (find-if #'probe-file candidates)
                    (merge-pathnames *system-prompt-path* (uiop:getcwd)))))
     (if (probe-file path)

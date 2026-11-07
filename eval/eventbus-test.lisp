@@ -1,4 +1,4 @@
-(load "eventbus.lisp")
+(load (merge-pathnames "../src/eventbus.lisp" *load-truename*))
 (eventbus:ensure-schema)
 ;; 3 publishers' worth
 (eventbus:publish "agents/mia" (list :n 0))
