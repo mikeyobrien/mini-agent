@@ -17,18 +17,37 @@
 
 (in-package :mini-agent)
 
-;;; --- Config -----------------------------------------------------------------
-(defparameter *base-url* (or (uiop:getenv "MINI_AGENT_BASE_URL") "http://spark-1:8888/v1"))
-(defparameter *model*    (or (uiop:getenv "MINI_AGENT_MODEL") "GLM-5.3-Flash-EXL3"))
-;; 0 = no step cap, mirroring mini-swe-agent's mini.yaml default.
-(defparameter *max-steps*
-  (parse-integer (or (uiop:getenv "MINI_AGENT_MAX_STEPS") "0")))
-(defparameter *step-timeout*
-  (parse-integer (or (uiop:getenv "MINI_AGENT_TIMEOUT") "120")))
-;;; High thinking (operator pref): enabled, bounded budget.
-(defparameter *thinking* "\"enable_thinking\":true,\"thinking_budget\":16384")
+;;; --- Config: environment over hardcode (12factor III) ---------------------------------
+;;; Every knob is MINI_AGENT_<NAME>; defaults only ease the zero-config case.
 
-(defparameter *max-output* 20000)
+(defun env-str (name dflt) (or (uiop:getenv name) dflt))
+(defun env-int (name dflt) (parse-integer (env-str name (princ-to-string dflt))))
+
+;; Where the OpenAI-compatible endpoint lives. No default endpoint: unset
+;; MINI_AGENT_BASE_URL means "tell me", not "guess my infra".
+(defparameter *base-url* (env-str "MINI_AGENT_BASE_URL" nil))
+(defparameter *model*    (env-str "MINI_AGENT_MODEL" nil))
+
+;; Loop limits. 0 = disabled, mirroring mini-swe-agent's mini.yaml.
+(defparameter *max-steps*      (env-int "MINI_AGENT_MAX_STEPS" 0))
+(defparameter *step-timeout*   (env-int "MINI_AGENT_TIMEOUT" 120))
+(defparameter *http-timeout*   (env-int "MINI_AGENT_HTTP_TIMEOUT" 300))
+(defparameter *max-output*     (env-int "MINI_AGENT_MAX_OUTPUT" 20000))
+(defparameter *trunc-head*     (env-int "MINI_AGENT_TRUNC_HEAD" 10000))
+(defparameter *trunc-tail*     (env-int "MINI_AGENT_TRUNC_TAIL" 10000))
+
+;;; Thinking: "enabled" (default budget), "enabled:N" custom budget, "off" disabled.
+(defparameter *thinking*
+  (let ((raw (env-str "MINI_AGENT_THINKING" "enabled")))
+    (cond
+      ((member raw '("" "off" "false") :test #'string=) nil)
+      ((string= raw "enabled") "\"enable_thinking\":true,\"thinking_budget\":16384")
+      ((uiop:string-prefix-p "enabled:" raw)
+       (format nil "\"enable_thinking\":true,\"thinking_budget\":~a"
+               (ignore-errors (parse-integer (subseq raw 8)))))
+      (t raw))))
+
+(defparameter *system-prompt-path* (env-str "MINI_AGENT_SYSTEM_MD" "SYSTEM.md"))
 
 ;;; ---------------------------------------------------------------------------
 ;;; JSON encoding
@@ -175,7 +194,7 @@
         (write-string body f))
       (let ((code (uiop:run-program
                    (list "curl" "-s" "-o" (namestring out) "-w" "%{http_code}"
-                         "--max-time" "300"
+                         "--max-time" (princ-to-string *http-timeout*)
                          "-H" "Content-Type: application/json"
                          "--data-binary" (format nil "@~a" (namestring req))
                          url)
@@ -207,14 +226,20 @@
                               ("content" (jstr (or content "")))))
                 (t      (jobj ("role" (jstr role))
                               ("content" (jstr (or content ""))))))))))
-    (jobj ("model" (jstr *model*))
-          ("messages" (jlist
-                          (cons (jobj ("role" (jstr "system"))
-                                      ("content" (jstr (slurp-system-md))))
-                                msgs)))
-          ("tools" (jlist (list (tool-schema))))
-          ("tool_choice" (jstr "auto"))
-          ("chat_template_kwargs" (format nil "{~a}" *thinking*)))))
+    (let ((base (jobj ("model" (jstr *model*))
+                      ("messages" (jlist
+                                      (cons (jobj ("role" (jstr "system"))
+                                                  ("content" (jstr (slurp-system-md))))
+                                            msgs)))
+                      ("tools" (jlist (list (tool-schema))))
+                      ("tool_choice" (jstr "auto"))))
+          (thinking (when *thinking*
+                      (format nil ",\"chat_template_kwargs\":{~a}" *thinking*))))
+      ;; splice thinking kwargs before the closing brace
+      (concatenate 'string
+                   (subseq base 0 (1- (length base)))
+                   thinking
+                   "}"))))
 
 (defun query-lm (history)
   (let* ((body (build-request history))
@@ -230,7 +255,7 @@
   (cond
     ((null s) "(no output)")
     ((<= (length s) *max-output*) s)
-    (t (let ((head 10000) (tail 10000))
+    (t (let ((head *trunc-head*) (tail *trunc-tail*))
          (format nil "~a~%~%...~a chars elided...~%~%~a"
                  (subseq s 0 head)
                  (- (length s) head tail)
@@ -244,7 +269,8 @@
          (list "bash" "-c" cmd)
          :output output
          :error-output output
-         :input nil)
+         :input nil
+         :timeout *step-timeout*)
         (truncate-output (string-right-trim "\n" (get-output-stream-string output))))
     (error (e) (format nil "Error: ~a" e))))
 
@@ -319,12 +345,16 @@
                                    ("arguments" (jstr (ht-get fn "arguments"))))))))))))
 
 (defun slurp-system-md ()
-  (let ((path (merge-pathnames "SYSTEM.md" (uiop:getcwd))))
+  (let ((path (merge-pathnames *system-prompt-path* (uiop:getcwd))))
     (if (probe-file path)
         (uiop:read-file-string path)
-        (error "SYSTEM.md not found in ~a" (uiop:getcwd)))))
+        (error "system prompt ~a not found in ~a" *system-prompt-path* (uiop:getcwd)))))
 
 (defun main ()
+  (unless *base-url*
+    (error "MINI_AGENT_BASE_URL not set; e.g. MINI_AGENT_BASE_URL=http://host:8000/v1"))
+  (unless *model*
+    (error "MINI_AGENT_MODEL not set; e.g. MINI_AGENT_MODEL=my-model"))
   (let ((args (command-line-arguments)))
     (let ((task (if args (format nil "~{~a~^ ~}" args)
                     (progn
