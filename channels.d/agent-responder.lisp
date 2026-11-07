@@ -72,9 +72,9 @@
         (let ((*standard-output* out))
           (set-agent-env)
           (funcall (find-symbol "RUN" :mini-agent) task))
-        (let* ((raw (get-output-stream-string out))
-               ;; drop one-time quicklisp/ASDF noise before the first [step
-               (stripped (if (search "[step" raw)
+        (let* ((raw (strip-loader-noise (get-output-stream-string out)))
+               (stripped (if (and (search "[step" raw)
+                                  (< (search "[step" raw) 40))
                              (subseq raw (search "[step" raw))
                              raw))
                (text (string-trim " \n\t" stripped)))
@@ -82,6 +82,22 @@
               (values t text)
               (values nil "agent returned empty output"))))
     (error (e) (values nil (format nil "agent error: ~a" e)))))
+
+
+(defun strip-loader-noise (raw)
+  ;; Drop quicklisp/ASDF chatter: lines starting with To load/;;/Loading and
+  ;; the dots progress lines; keep the rest verbatim.
+  (with-output-to-string (acc)
+    (with-input-from-string (s2 raw)
+      (loop for line = (read-line s2 nil nil) while line
+            unless (or (uiop:string-prefix-p "To load" line)
+                       (uiop:string-prefix-p ";; " line)
+                       (uiop:string-prefix-p "; " line)
+                       (uiop:string-prefix-p "Loading " line)
+                       (and (plusp (length line))
+                            (every (lambda (c) (member c '(#\. #\Space))) line)))
+              do (write-line line acc)))))
+
 
 (defun reply (chat-id text)
   (eventbus:publish "telegram/outbound"
@@ -185,15 +201,18 @@ Task: ~a"
   (queue-push chat-id task))
 
 (defun handle (event)
+  ;; Plain text converses with the agent (memory+queue, bounded). "! task"
+  ;; forces a work task; "echo ..." keeps the legacy mirror for probes.
   (let* ((data (getf event :data))
-         (text (jget data "text"))
+         (text (and (jget data "text") (string-trim " \n\r" (jget data "text"))))
          (chat (jget data "chat_id")))
-    (when (and text chat
-               (or (uiop:string-prefix-p "! " text)
-                   (string= "!" text)))
-      (let ((task (string-trim " " (subseq text 1))))
-        (when (plusp (length task))
-          (spawn-task chat task))))))
+    (when (and text chat (plusp (length text)))
+      (cond
+        ((uiop:string-prefix-p "! " text)
+         (let ((task (string-trim " " (subseq text 2))))
+           (when (plusp (length task)) (spawn-task chat task))))
+        ((uiop:string-prefix-p "echo " text) nil) ; echo-responder mirrors these
+        (t (spawn-task chat text))))))
 
 (defun seen-db ()
   (merge-pathnames "agent_seen.db" (uiop:getcwd)))

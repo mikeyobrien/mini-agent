@@ -68,8 +68,10 @@
          (chat (jget data "chat_id")))
     ;; No update_id (synthetic/manual inject): still reply, but nothing to
     ;; dedupe on -- accept the replay risk, it is test traffic by definition.
-    (when (and text chat (not (seen-p update-id)))
-      (reply chat (format nil "~a" text))
+    ;; Mirror only explicit "echo ..." - plain text now goes to the agent.
+    (when (and text chat (uiop:string-prefix-p "echo " text)
+               (not (seen-p update-id)))
+      (reply chat (subseq text 5))
       (mark update-id))))
 
 (defun seed-cursor ()
