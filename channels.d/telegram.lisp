@@ -88,20 +88,16 @@
 ;;; --- outbound ----------------------------------------------------------------
 
 (defun send-payload (method payload)
-  "Markdown first; on failure retry plain, dropping reply_to too (a bad
-reply_to or entity poisons both modes). Never loops: one fallback each."
+  "As given first; on failure one retry with parse_mode and reply_to dropped
+(a bad entity or reply_to poisons the send). A second failure raises, so the
+dispatcher's backoff takes over."
   (handler-case (api method payload)
     (error (e)
       (let ((h (copy-hash-table payload)))
         (remhash "parse_mode" h)
         (remhash "reply_to_message_id" h)
         (format *error-output* "chan-telegram fallback: ~a~%" e)
-        (handler-case (api method h)
-          (error (e2)
-            (let ((h2 (copy-hash-table payload)))
-              (remhash "reply_to_message_id" h2)
-              (format *error-output* "chan-telegram plain: ~a~%" e2)
-              (api method h2))))))))
+        (api method h)))))
 
 (defun outbound-dispatch (id ts topic data)
   "telegram/* -> Bot API. T handled; nil/raise => delivery retry."
