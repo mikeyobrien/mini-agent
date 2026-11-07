@@ -18,8 +18,9 @@
 (in-package :agent-responder)
 
 (defparameter *poll-seconds* 2)
-(defparameter *wall-clock* 240          ; hard cap per task, seconds
-  "Wall-clock bound; agent's own budgets are smaller but belts+suspenders.")
+(defparameter *wall-clock* 900
+  "Hard cap per task, seconds. Must exceed MAX_STEPS * worst-step;
+   spark prefill alone can take minutes.")
 (defparameter *db* nil)
 (defparameter *env* nil)                ; agent env alist, loaded at boot
 (defparameter *cursor* 0)
