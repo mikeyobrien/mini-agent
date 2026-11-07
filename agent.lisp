@@ -73,6 +73,26 @@
 ;;; JSON: com.inuoe.jzon (parse/stringify imported above).
 ;;; Values: objects hash-tables, arrays vectors, true/false t/nil, null :null.
 
+;;; --- Optional event bus -----------------------------------------------------
+;;; If eventbus.lisp sits next to agent.lisp, every run emits
+;;; agent/start, agent/step, agent/done. Absent file => silent no-op.
+
+(defvar *eventbus* nil)
+
+(defun emit (event payload)
+  (when *eventbus*
+    (ignore-errors
+      (funcall (find-symbol "PUBLISH" :eventbus)
+               (format nil "agent/~a" event)
+               (list :payload payload)))))
+
+(defun load-eventbus ()
+  (let ((path (merge-pathnames "eventbus.lisp" (or *load-truename* *default-pathname-defaults*))))
+    (when (probe-file path)
+      (load path)
+      (setf *eventbus* t)
+      (funcall (find-symbol "ENSURE-SCHEMA" :eventbus)))))
+
 ;;; HTTP transport: curl for the wire, Lisp for everything else.
 
 (defun http-post-json (url body)
@@ -188,6 +208,8 @@ Symbols become downcased names sans colon; strings pass through."
     (error (e) (format nil "Error: ~a" e))))
 
 (defun run (task)
+  (load-eventbus)
+  (emit "start" (list :task task))
   (let ((history
           (list (list (cons :role "user") (cons :content task)))))
     (loop for step from 1 do
@@ -204,7 +226,9 @@ Symbols become downcased names sans colon; strings pass through."
           (cond
             ;; no tool calls => final answer
             ((null calls)
-             (format t "~a~%" (or   (gethash "content" msg) "(empty)"))
+             (let ((answer (or (gethash "content" msg) "(empty)")))
+               (emit "done" (list :ok t :answer answer))
+               (format t "~a~%" answer))
              (return-from run))
             (t
              (dolist (c calls)
@@ -213,6 +237,7 @@ Symbols become downcased names sans colon; strings pass through."
                                  (ignore-errors (parse (gethash "arguments" fn)))))
                               (cmd (or (and (hash-table-p args)   (gethash "command" args)) "")))
                  (format t "[step ~a] $ ~a~%" step cmd)
+                 (emit "step" (list :step step :command cmd))
                  (let ((out (execute cmd)))
                    (setf history
                          (append history
@@ -220,6 +245,7 @@ Symbols become downcased names sans colon; strings pass through."
                                              (cons :tool-call-id   (gethash "id" c))
                                              (cons :content out)))))))))))))
     ;; loop ended without final answer
+    (emit "done" (list :ok nil :reason "budget-exhausted"))
     (when (plusp *max-steps*)
       (format t "(step budget ~a exhausted)~%" *max-steps*))))
 
