@@ -7,7 +7,8 @@
 ;;;;
 ;;;; Run:  sbcl --script run.lisp "fix the failing test"
 ;;;;       sbcl --script run.lisp              (prompts for a task)
-;;;; Requires: SBCL; shells out to curl for HTTP transport only. No ASDF deps.
+;;;; Requires: SBCL + quicklisp (~/.quicklisp) for com.inuoe.jzon; curl for HTTP.
+;;;; Bootstrap: sbcl --load ~/quicklisp/setup.lisp --script run.lisp "task"
 
 (require :uiop)
 
@@ -16,6 +17,25 @@
   (:import-from #:uiop #:getenv #:command-line-arguments))
 
 (in-package :mini-agent)
+
+;;; --- JSON via com.inuoe.jzon (quicklisp) ------------------------------------
+;;; Bootstrapped here so `sbcl --script run.lisp` just works; the quicklisp
+;;; load is a no-op once installed.
+(eval-when (:load-toplevel :execute)
+  (unless (find-package :com.inuoe.jzon)
+    (let ((setup (merge-pathnames ".quicklisp/setup.lisp" (user-homedir-pathname))))
+      (unless (probe-file setup)
+        (error "mini-agent needs quicklisp at ~a (for com.inuoe.jzon). Install quicklisp first." setup))
+      (load setup))
+    (unless (find-package :ql)   ; setup loaded but features checked at read time below
+      nil))
+  (when (find-package :ql)
+    (funcall (find-symbol "QUICKLOAD" :ql) :com.inuoe.jzon))
+  (unless (find-package :com.inuoe.jzon)
+    (error "com.inuoe.jzon not loadable; run (ql:quickload :com.inuoe.jzon) once.")))
+
+(import 'com.inuoe.jzon:parse :mini-agent)
+(import 'com.inuoe.jzon:stringify :mini-agent)
 
 ;;; --- Config: environment over hardcode (12factor III) ---------------------------------
 ;;; Every knob is MINI_AGENT_<NAME>; defaults only ease the zero-config case.
@@ -50,141 +70,9 @@
 (defparameter *system-prompt-path* (env-str "MINI_AGENT_SYSTEM_MD" "SYSTEM.md"))
 
 ;;; ---------------------------------------------------------------------------
-;;; JSON encoding
+;;; JSON: com.inuoe.jzon (parse/stringify imported above).
+;;; Values: objects hash-tables, arrays vectors, true/false t/nil, null :null.
 
-(defun json-escape (s)
-  (with-output-to-string (out)
-    (loop for ch across (the string (string s)) do
-      (case ch
-        (#\"  (write-string "\\\"" out))
-        (#\\  (write-string "\\\\" out))
-        (#\Newline (write-string "\\n" out))
-        (#\Return  (write-string "\\r" out))
-        (#\Tab     (write-string "\\t" out))
-        (t (write-char ch out))))))
-
-(defun jstr (x) (format nil "\"~a\"" (json-escape (princ-to-string x))))
-
-(defmacro jobj (&body slots)
-  ;; (jobj ("key" value) ...) -> {"key":V,...}; values evaluate to JSON fragments
-  (let ((n (length slots)))
-    `(with-output-to-string (s)
-       (write-char #\{ s)
-       ,@(loop for slot in slots
-               for i from 0
-               append (destructuring-bind (k v) slot
-                        `((progn (write-string ,(format nil "\"~a\":" k) s)
-                                 (princ ,v s))
-                          ,@(when (< i (1- n)) `((write-char #\, s))))))
-       (write-char #\} s))))
-
-(defun jlist (frags) (format nil "[~{~a~^,~}]" frags))
-
-(defun tool-schema ()
-  (jobj ("type" (jstr "function"))
-        ("function" (jobj
-          ("name" (jstr "bash"))
-          ("description" (jstr "Run a shell command in a fresh subshell. No state persists: prefix cd / export every time."))
-          ("parameters" (jobj
-            ("type" (jstr "object"))
-            ("properties" (jobj ("command" (jobj ("type" (jstr "string"))))))
-            ("required" (jlist (list (jstr "command"))))))))))
-
-;;; ---------------------------------------------------------------------------
-;;; JSON decoding — smallest parser that reads chat-completions responses.
-;;; Strings -> string, numbers -> number, true/false -> t/nil, null -> :null,
-;;; objects -> hash-table (equal), arrays -> list.
-
-(defun json-parse (s) (%value (coerce s 'simple-string) 0))
-
-(defun %ws (s i)
-  (do ((j i (1+ j)))
-      ((or (>= j (length s))
-           (not (member (char s j) '(#\Space #\Newline #\Tab #\Return) :test #'char=)))
-       j)))
-
-(defun %value (s i)
-  (let ((p (%ws s i)))
-    (when (>= p (length s)) (error "json: unexpected end of input"))
-    (case (char s p)
-      (#\{ (%object s p))
-      (#\[ (%array  s p))
-      (#\" (%string s p))
-      (#\t (values t     (+ p 4)))
-      (#\f (values nil   (+ p 5)))
-      (#\n (values :null (+ p 4)))
-      (t   (%number s p)))))
-
-(defun %string (s i)
-  ;; i points at the opening quote; returns content and index past closing quote.
-  (let ((buf (make-string-output-stream)) (j (1+ i)) done)
-    (loop until done do
-      (let ((c (char s j)))
-        (cond
-          ((char= c #\") (setf done t))
-          ((char= c #\\)
-           (incf j)
-           (case (char s j)
-             (#\" (write-char #\" buf))
-             (#\\ (write-char #\\ buf))
-             (#\/ (write-char #\/ buf))
-             (#\n (write-char #\Newline buf))
-             (#\r (write-char #\Return buf))
-             (#\t (write-char #\Tab buf))
-             (#\b (write-char #\Backspace buf))
-             (#\f (write-char #\Page buf))
-             (#\u (let ((cp (parse-integer s :start (1+ j) :end (+ 4 j) :radix 16)))
-                    (write-char (code-char cp) buf)
-                    (incf j 3)))))
-          (t (write-char c buf))))
-      (incf j))
-    (values (get-output-stream-string buf) j)))
-
-(defun %object (s i)
-  (let ((h (make-hash-table :test 'equal)) (j (1+ i)))
-    (setf j (%ws s j))
-    (if (and (< j (length s)) (char= (char s j) #\}))
-        (values h (1+ j))
-        (loop
-          (multiple-value-bind (key kj) (%string s j)
-            (let ((colon (%ws s kj)))
-              (assert (char= (char s colon) #\:))
-              (multiple-value-bind (v vj) (%value s (1+ colon))
-                (setf (gethash key h) v)
-                (setf j (%ws s vj))
-                (case (char s j)
-                  (#\, (setf j (%ws s (1+ j))))
-                  (#\} (return-from %object (values h (1+ j))))
-                  (t (error "json: bad object syntax at ~a" j))))))))))
-
-(defun %array (s i)
-  (let (acc (j (1+ i)))
-    (setf j (%ws s j))
-    (if (and (< j (length s)) (char= (char s j) #\]))
-        (values nil (1+ j))
-        (loop
-          (multiple-value-bind (v vj) (%value s j)
-            (push v acc)
-            (setf j (%ws s vj))
-            (case (char s j)
-              (#\, (incf j))
-              (#\] (return-from %array (values (nreverse acc) (1+ j))))
-              (t (error "json: bad array syntax at ~a" j))))))))
-
-(defun %number (s i)
-  (let ((j i))
-    (when (char= (char s j) #\-) (incf j))
-    (loop while (and (< j (length s))
-                     (find (char s j) "0123456789.eE+-" :test #'char=))
-          do (incf j))
-    (values (read-from-string s nil nil :start i :end j) j)))
-
-;;; Accessors
-(defun ht-get (h k &optional dflt) (gethash k h dflt))
-(defun ensure-list (x) (if (consp x) x (and x (list x))))
-(defun jmap (fn list) (mapcar fn list))
-
-;;; ---------------------------------------------------------------------------
 ;;; HTTP transport: curl for the wire, Lisp for everything else.
 
 (defun http-post-json (url body)
@@ -208,8 +96,31 @@
 ;;; ---------------------------------------------------------------------------
 ;;; Agent loop
 
+(defun dict (&rest kvs)
+  "Flat (:a 1 :b 2) -> equal hash-table; jzon stringify renders objects.
+Symbols become downcased names sans colon; strings pass through."
+  (let ((h (make-hash-table :test 'equal)))
+    (loop while kvs
+          do (let ((k (pop kvs)) (v (pop kvs)))
+               (setf (gethash (cond
+                                ((stringp k) k)
+                                ((symbolp k) (string-downcase (symbol-name k)))
+                                (t (princ-to-string k)))
+                              h)
+                      v)))
+    h))
+
+(defun tool-schema ()
+  "bash tool: one string arg, the command."
+  (dict :type "function"
+        :function (dict :name "bash"
+                        :description "Run a shell command in a fresh subshell. No state persists: prefix cd / export every time."
+                        :parameters (dict :type "object"
+                                          :properties (dict :command (dict :type "string"))
+                                          :required (vector "command")))))
+
 (defun build-request (history)
-  ;; history: list of alists — ((:role . "assistant") (:content . "...) (:tool-calls . <json string>))
+  ;; history: list of alists — ((:role . "assistant") (:content . ...) (:tool-calls . list))
   ;; or ((:role . "tool") (:tool-call-id . "...") (:content . "..."))
   (let ((msgs
           (loop for m in history collect
@@ -218,40 +129,42 @@
                   (tcid   (cdr (assoc :tool-call-id m)))
                   (tcalls (cdr (assoc :tool-calls m))))
               (cond
-                (tcalls (jobj ("role" (jstr role))
-                              ("content" (if (stringp content) (jstr content) "null"))
-                              ("tool_calls" (the string tcalls))))
-                (tcid   (jobj ("role" (jstr "tool"))
-                              ("tool_call_id" (jstr tcid))
-                              ("content" (jstr (or content "")))))
-                (t      (jobj ("role" (jstr role))
-                              ("content" (jstr (or content ""))))))))))
-    (let ((base (jobj ("model" (jstr *model*))
-                      ("messages" (jlist
-                                      (cons (jobj ("role" (jstr "system"))
-                                                  ("content" (jstr (slurp-system-md))))
-                                            msgs)))
-                      ("tools" (jlist (list (tool-schema))))
-                      ("tool_choice" (jstr "auto"))))
+                (tcalls (dict :role role
+                              :content (or content 'null)
+                              :tool_calls tcalls))
+                (tcid   (dict :role "tool"
+                              :tool_call_id tcid
+                              :content (or content "")))
+                (t      (dict :role role
+                              :content (or content 'null))))))))
+    (let ((base (stringify
+                  (dict :model *model*
+                        :messages (append
+                                    (list (dict :role "system"
+                                                :content (slurp-system-md)))
+                                    msgs)
+                        :tools (vector (tool-schema))
+                        :tool_choice "auto")))
           (thinking (when *thinking*
                       (format nil ",\"chat_template_kwargs\":{~a}" *thinking*))))
-      ;; splice thinking kwargs before the closing brace
       (concatenate 'string
                    (subseq base 0 (1- (length base)))
-                   thinking
+                   (or thinking "")
                    "}"))))
 
 (defun query-lm (history)
   (let* ((body (build-request history))
          (text (http-post-json (format nil "~a/chat/completions" *base-url*) body))
-         (resp (json-parse text))
-         (choices (ht-get resp "choices")))
-    (when (or (null choices) (zerop (length choices)))
+         (resp (parse text))
+         (choices (gethash "choices" resp)))
+    (when (or (null choices)
+              (zerop (length choices))
+              (null (elt choices 0)))
       (error "no choices in response: ~a" (subseq text 0 (min 200 (length text)))))
-    (ht-get (elt choices 0) "message")))
+    (gethash "message" (elt choices 0))))
 
 (defun truncate-output (s)
-  ;; head+tail elision, mini-swe-agent observation style: 10k head + 10k tail
+  ;; head+tail elision, mini-swe-agent observation style
   (cond
     ((null s) "(no output)")
     ((<= (length s) *max-output*) s)
@@ -274,75 +187,63 @@
         (truncate-output (string-right-trim "\n" (get-output-stream-string output))))
     (error (e) (format nil "Error: ~a" e))))
 
-(defun assistant-message-json (msg)
-  "Re-encode the assistant message for the next request round-trip."
-  (let ((content (ht-get msg "content"))
-        (calls   (ht-get msg "tool_calls")))
-    (if calls
-        (jobj ("role" "assistant")
-              ("content" (if (and (stringp content) (plusp (length content)))
-                                (jstr content) "null"))
-              ("tool_calls" (jlist
-                                (loop for c in (ensure-list calls) collect
-                                  (let ((fn (ht-get c "function")))
-                                    (jobj ("id" (jstr (ht-get c "id")))
-                                          ("type" (jstr "function"))
-                                          ("function" (jobj
-                                            ("name" (jstr (ht-get fn "name")))
-                                            ("arguments" (jstr (ht-get fn "arguments")))))))))))
-        (jobj ("role" "assistant")
-              ("content" (if (stringp content) (jstr content) "null"))))))
-
 (defun run (task)
   (let ((history
           (list (list (cons :role "user") (cons :content task)))))
     (loop for step from 1 do
       (let* ((msg (query-lm history))
-             (tcalls (ht-get msg "tool_calls"))
-             (encoded (and tcalls (assistant-message-json-toolcalls msg))))
+             (tcalls   (gethash "tool_calls" msg))
+             (encoded (and tcalls (canonical-tool-calls msg))))
         ;; append assistant turn verbatim (canonical tool_calls when present)
         (setf history
               (append history
                       (list (list (cons :role "assistant")
-                                  (cons :content (ht-get msg "content"))
+                                  (cons :content   (gethash "content" msg))
                                   (cons :tool-calls encoded)))))
-        (let ((calls (remove-if-not #'tool-callsp (ensure-list tcalls))))
+        (let ((calls (remove-if-not #'tool-callsp (calls-as-list tcalls))))
           (cond
             ;; no tool calls => final answer
             ((null calls)
-             (format t "~a~%" (or (ht-get msg "content") "(empty)"))
+             (format t "~a~%" (or   (gethash "content" msg) "(empty)"))
              (return-from run))
             (t
              (dolist (c calls)
-               (let* ((fn (ht-get c "function"))
-                      (args (and (ht-get fn "arguments")
-                                 (ignore-errors (json-parse (ht-get fn "arguments")))))
-                              (cmd (or (and (hash-table-p args) (ht-get args "command")) "")))
+               (let* ((fn   (gethash "function" c))
+                      (args (and   (gethash "arguments" fn)
+                                 (ignore-errors (parse (gethash "arguments" fn)))))
+                              (cmd (or (and (hash-table-p args)   (gethash "command" args)) "")))
                  (format t "[step ~a] $ ~a~%" step cmd)
                  (let ((out (execute cmd)))
                    (setf history
                          (append history
                                  (list (list (cons :role "tool")
-                                             (cons :tool-call-id (ht-get c "id"))
+                                             (cons :tool-call-id   (gethash "id" c))
                                              (cons :content out)))))))))))))
     ;; loop ended without final answer
     (when (plusp *max-steps*)
       (format t "(step budget ~a exhausted)~%" *max-steps*))))
 
-(defun tool-callsp (x) (and (hash-table-p x) (ht-get x "function" nil)))
+(defun tool-callsp (x) (and (hash-table-p x) (gethash "function" x nil)))
 
-(defun assistant-message-json-toolcalls (msg)
-  ;; Re-encode real tool calls canonically; NIL when absent/empty/malformed.
-  (let ((calls (remove-if-not #'tool-callsp (ensure-list (ht-get msg "tool_calls")))))
+(defun calls-as-list (v)
+  ;; jzon: vector for arrays, CL:NULL for JSON null, nil when absent.
+  (cond
+    ((and (symbolp v) (eq v 'null)) nil)
+    ((vectorp v) (coerce v 'list))
+    ((listp v) v)
+    (t nil)))
+
+(defun canonical-tool-calls (msg)
+  ;; Real tool calls as plain structures for stringify; NIL when none/malformed.
+  (let ((calls (remove-if-not #'tool-callsp (calls-as-list (gethash "tool_calls" msg)))))
     (when calls
-      (jlist
-       (loop for c in calls collect
-             (let ((fn (ht-get c "function")))
-               (jobj ("id" (jstr (ht-get c "id")))
-                     ("type" (jstr "function"))
-                     ("function" (jobj
-                                   ("name" (jstr (ht-get fn "name")))
-                                   ("arguments" (jstr (ht-get fn "arguments"))))))))))))
+      (mapcar (lambda (c)
+                (let ((fn (gethash "function" c)))
+                  (dict :id (gethash "id" c)
+                        :type "function"
+                        :function (dict :name (gethash "name" fn)
+                                        :arguments (gethash "arguments" fn)))))
+                calls))))
 
 (defun slurp-system-md ()
   (let ((path (merge-pathnames *system-prompt-path* (uiop:getcwd))))
