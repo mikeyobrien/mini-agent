@@ -174,7 +174,9 @@
 
 (defun heartbeat ()
   (loop
-    (publish "eventd/beat" (list :ts (get-universal-time)))
+    ;; Never let a transient sqlite busy kill the liveness thread.
+    (handler-case (publish "eventd/beat" (list :ts (get-universal-time)))
+      (error (e) (format *error-output* "heartbeat: ~a~%" e)))
     (sleep *beat-interval*)))
 
 (defun repl ()

@@ -124,7 +124,7 @@
           (unless (string= (first parts) "200")
             (error "HTTP ~a: ~a" (first parts)
                    (subseq text 0 (min 300 (length text)))))
-          (values text ttfb-s)))))))
+          (values text ttfb-s))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Agent loop
