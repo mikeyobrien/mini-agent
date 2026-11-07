@@ -104,22 +104,27 @@
 ;;; HTTP transport: curl for the wire, Lisp for everything else.
 
 (defun http-post-json (url body)
+  ;; Returns (values body-text ttfb-seconds). ttfb = curl time_starttransfer:
+  ;; server prefill+queue, the honest TTFT proxy for non-streaming calls.
   (uiop:with-temporary-file (:pathname req)
     (uiop:with-temporary-file (:pathname out)
       (with-open-file (f req :direction :output :if-exists :supersede)
         (write-string body f))
       (let ((code (uiop:run-program
-                   (list "curl" "-s" "-o" (namestring out) "-w" "%{http_code}"
+                   (list "curl" "-s" "-o" (namestring out) "-w"
+                         "%{http_code} %{time_total} %{time_starttransfer}"
                          "--max-time" (princ-to-string *http-timeout*)
                          "-H" "Content-Type: application/json"
                          "--data-binary" (format nil "@~a" (namestring req))
                          url)
                    :output :string)))
-        (let ((text (uiop:read-file-string out)))
-          (unless (string= (string-trim '(#\Space #\Newline #\Return) code) "200")
-            (error "HTTP ~a: ~a" (string-trim '(#\Space #\Newline) code)
+        (let* ((parts (uiop:split-string (string-trim '(#\Space #\Newline #\Return) code)))
+               (text (uiop:read-file-string out))
+               (ttfb-s (ignore-errors (with-input-from-string (s2 (third parts)) (read s2)))))
+          (unless (string= (first parts) "200")
+            (error "HTTP ~a: ~a" (first parts)
                    (subseq text 0 (min 300 (length text)))))
-          text)))))
+          (values text ttfb-s)))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Agent loop
@@ -180,16 +185,61 @@ Symbols become downcased names sans colon; strings pass through."
                    (or thinking "")
                    "}"))))
 
+(defun jnum (h k) (let ((v (and (hash-table-p h) (gethash k h)))) (and (numberp v) v)))
+
+(defun jpath (h &rest ks)
+  (let ((v h)) (dolist (k ks) (setf v (and (hash-table-p v) (gethash k v)))) v))
+
+(defun lm-observability (resp ttfb wall)
+  ;; One dict: cache hits, tokens up/down, decode tps, ttft. Absent fields nil.
+  (let* ((usage (gethash "usage" resp))
+         (ptd (and usage (gethash "prompt_tokens_details" usage)))
+         (ctd (and usage (gethash "completion_tokens_details" usage)))
+         (tf (gethash "tensorfold" resp))
+         (prompt-tok (jnum usage "prompt_tokens"))
+         (completion-tok (jnum usage "completion_tokens"))
+         (cached (jnum ptd "cached_tokens"))
+         (decode-s (jnum tf "decode_s"))
+         (prefill-s (jnum tf "prefill_s")))
+    (dict
+     :model (gethash "model" resp)
+     ;; tokens
+     :prompt_tokens prompt-tok
+     :completion_tokens completion-tok
+     :reasoning_tokens (jnum ctd "reasoning_tokens")
+     ;; cache
+     :cached_tokens cached
+     :cache_hit_pct (when (and cached prompt-tok (plusp prompt-tok))
+                      (coerce (/ (* 100 cached) prompt-tok) 'single-float))
+     ;; timing
+     :ttfb_s ttfb
+     :ttft_s (or ttfb prefill-s)     ; best-effort when no curl timing
+     :prefill_s prefill-s
+     :decode_s decode-s
+     :wall_s wall
+     :decode_tps (when (and completion-tok decode-s (plusp decode-s))
+                   (coerce (/ completion-tok decode-s) 'single-float))
+     :prefill_tps (when (and prompt-tok prefill-s (plusp prefill-s))
+                    (coerce (/ prompt-tok prefill-s) 'single-float))
+     ;; spec-decode extras when present (tensorfold)
+     :drafted (jnum tf "drafted")
+     :accepted (jnum tf "accepted"))))
+
 (defun query-lm (history)
-  (let* ((body (build-request history))
-         (text (http-post-json (format nil "~a/chat/completions" *base-url*) body))
-         (resp (parse text))
-         (choices (gethash "choices" resp)))
-    (when (or (null choices)
-              (zerop (length choices))
-              (null (elt choices 0)))
-      (error "no choices in response: ~a" (subseq text 0 (min 200 (length text)))))
-    (gethash "message" (elt choices 0))))
+  (let* ((t0 (get-internal-real-time))
+         (body (build-request history)))
+    (multiple-value-bind (text ttfb)
+        (http-post-json (format nil "~a/chat/completions" *base-url*) body)
+      (let* ((wall (/ (- (get-internal-real-time) t0) internal-time-units-per-second 1.0))
+             (resp (parse text))
+             (choices (gethash "choices" resp)))
+        (when (or (null choices)
+                  (zerop (length choices))
+                  (null (elt choices 0)))
+          (error "no choices in response: ~a" (subseq text 0 (min 200 (length text)))))
+        (ignore-errors
+          (emit "call" (lm-observability resp ttfb wall)))
+        (gethash "message" (elt choices 0))))))
 
 (defun truncate-output (s)
   ;; head+tail elision, mini-swe-agent observation style
