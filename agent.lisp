@@ -84,7 +84,7 @@
     (ignore-errors
       (funcall (find-symbol "PUBLISH" :eventbus)
                (format nil "agent/~a" event)
-               (list :payload payload)))))
+               payload))))
 
 (defun load-eventbus ()
   (let ((path (merge-pathnames "eventbus.lisp" (or *load-truename* *default-pathname-defaults*))))
