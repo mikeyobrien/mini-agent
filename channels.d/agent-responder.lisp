@@ -123,18 +123,18 @@
                   (string-trim " \n\r" (or (state-tail chat-id) "")))))
     (if (plusp (length mem))
         (format nil
-"Persistent memory (state/~a.md tail below). You MAY append durable facts with:
-  echo \"...one terse line...\" >> state/~a.md
+"Your persistent memory: state/~a.md (tail below). Edit it freely with any
+shell tool - append, rewrite, prune, restructure. Keep it terse and useful;
+it is your only memory between runs.
 --- memory tail ---
 ~a
 --- end ---
 Task: ~a"
-                chat-id chat-id mem task)
+                chat-id mem task)
         (format nil
-"No memory file yet. After the task, append one terse outcome line:
-  echo \"...~a: ...\" >> state/~a.md
+"You have no memory file yet. Create state/~a.md and keep durable facts
+there - edit it freely with any shell tool. It is your only memory.
 Task: ~a"
-                (subseq (format nil "~a" task) 0 (min 30 (length (format nil "~a" task))))
                 chat-id task))))
 
 ;;; --- bounded queue -----------------------------------------------------------
