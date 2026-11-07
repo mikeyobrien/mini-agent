@@ -202,6 +202,7 @@
   (ensure-deliveries-schema)
   (format t "eventd up; pid in ~a; channels: ~{~a~^, ~}; stdin: \"topic {json}\" | since <id> [glob]~%"
           *pid-file* (mapcar #'chanreg:channel-name (chanreg:all-channels)))
+  (chanreg:run-boot-hooks)
   (let ((hb (sb-thread:make-thread #'heartbeat :name "heartbeat"))
         (dp (sb-thread:make-thread #'dispatcher :name "dispatcher"))
         (starts (remove-if-not #'chanreg:channel-start-fn (chanreg:all-channels))))

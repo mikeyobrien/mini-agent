@@ -99,7 +99,7 @@
                                        (jget (jget msg "chat") "id")
                                        (gethash "text" h) (jget msg "text")
                                        (gethash "from" h) (jget msg "from")
-                                       (gethash "message_id" h) (jget msg "id"))
+                                       (gethash "message_id" h) (jget msg "message_id"))
                                  h)))))))
       (error (e)
         (format *error-output* "chan-telegram inbound: ~a~%" e)

@@ -11,8 +11,8 @@
   (:use :cl)
   (:import-from :uiop #:getenv)
   (:export #:channel #:channel-name #:channel-poll-glob #:channel-send-fn
-           #:channel-start-fn
-           #:register #:find-channel #:all-channels
+           #:channel-start-fn #:*boot-hooks*
+           #:register #:find-channel #:all-channels #:run-boot-hooks
            #:load-connectors #:connector-dir))
 
 (in-package :chanreg)
@@ -44,6 +44,16 @@
 
 (defun all-channels ()
   (loop for v being the hash-values of *registry* collect v))
+
+(defvar *boot-hooks* nil
+  "List of zero-arg thunks run in their own threads after daemon boot.
+   Consumers (responders, bridges) push onto this in their connector file;
+   they see the bus without being channels.")
+
+(defun run-boot-hooks ()
+  (dolist (thunk (reverse *boot-hooks*))
+    (ignore-errors
+      (sb-thread:make-thread thunk :name "chanreg-boot-hook"))))
 
 (defun connector-dir ()
   "channels.d/ beside src/ (repo root), $CHANREG_DIR, or cwd."
