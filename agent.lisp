@@ -20,8 +20,9 @@
 ;;; --- Config -----------------------------------------------------------------
 (defparameter *base-url* (or (uiop:getenv "MINI_AGENT_BASE_URL") "http://spark-1:8888/v1"))
 (defparameter *model*    (or (uiop:getenv "MINI_AGENT_MODEL") "GLM-5.3-Flash-EXL3"))
+;; 0 = no step cap, mirroring mini-swe-agent's mini.yaml default.
 (defparameter *max-steps*
-  (parse-integer (or (uiop:getenv "MINI_AGENT_MAX_STEPS") "40")))
+  (parse-integer (or (uiop:getenv "MINI_AGENT_MAX_STEPS") "0")))
 (defparameter *step-timeout*
   (parse-integer (or (uiop:getenv "MINI_AGENT_TIMEOUT") "120")))
 ;;; High thinking (operator pref): enabled, bounded budget.
@@ -225,12 +226,15 @@
     (ht-get (elt choices 0) "message")))
 
 (defun truncate-output (s)
-  (if (<= (length s) *max-output*)
-      (or s "(no output)")
-      (format nil "~a~%...truncated (~a chars)...~%~a"
-              (subseq s 0 (- *max-output* 100))
-              (length s)
-              (subseq s (- (length s) 100)))))
+  ;; head+tail elision, mini-swe-agent observation style: 10k head + 10k tail
+  (cond
+    ((null s) "(no output)")
+    ((<= (length s) *max-output*) s)
+    (t (let ((head 10000) (tail 10000))
+         (format nil "~a~%~%...~a chars elided...~%~%~a"
+                 (subseq s 0 head)
+                 (- (length s) head tail)
+                 (subseq s (- (length s) tail)))))))
 
 (defun execute (cmd)
   "Stateless subprocess per action, like mini-swe-agent."
@@ -266,7 +270,7 @@
 (defun run (task)
   (let ((history
           (list (list (cons :role "user") (cons :content task)))))
-    (loop for step from 1 to *max-steps* do
+    (loop for step from 1 do
       (let* ((msg (query-lm history))
              (tcalls (ht-get msg "tool_calls"))
              (encoded (and tcalls (assistant-message-json-toolcalls msg))))
@@ -296,7 +300,8 @@
                                              (cons :tool-call-id (ht-get c "id"))
                                              (cons :content out)))))))))))))
     ;; loop ended without final answer
-    (format t "(step budget ~a exhausted)~%" *max-steps*)))
+    (when (plusp *max-steps*)
+      (format t "(step budget ~a exhausted)~%" *max-steps*)))
 
 (defun tool-callsp (x) (and (hash-table-p x) (ht-get x "function" nil)))
 
