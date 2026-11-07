@@ -65,6 +65,7 @@ writing a consumer, or adding an event type).
 | `test/smoke.sh` | bounded live smoke suite — run after any change |
 | `test/eventbus-test.lisp` | bus regression: publishers, glob, cursor |
 | `test/skills-test.lisp` | skill discovery + prompt wiring regression |
+| `test/dispatch-test.lisp` | delivery retry/dead-letter regression (`EVENTD_NO_MAIN=1`, scratch cwd) |
 | `skills/<name>/SKILL.md` | skills listed in the system prompt (`rex` ships) |
 | `docs/reference.md` | API reference + payload/cursor contracts |
 | `docs/operations.md` | runbook: daemon lifecycle, health, failure triage |

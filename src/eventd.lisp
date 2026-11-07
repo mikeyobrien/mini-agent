@@ -49,7 +49,8 @@
 
 ;;; --- delivery state: per-channel cursors + retries ----------------------------
 ;;; One table, every channel. (channel, event_id) is the unit: 'sent' = done,
-;;; 'claimed'/'pending' + next_at = awaiting (re)delivery with backoff.
+;;; 'dead' = gave up after *max-attempts*, 'claimed'/'pending' + next_at =
+;;; awaiting (re)delivery with backoff.
 ;;; Each channel owns its own replay point; a restart resumes all independently.
 
 (defmacro with-ddb ((conn) &body body)
@@ -57,11 +58,13 @@
      (unwind-protect (progn ,@body) (sqlite:disconnect ,conn))))
 
 (defun channel-cursor (name)
-  "Highest sent/claimed event id for channel NAME — its since-watermark."
+  "Highest sent/dead/claimed event id for channel NAME — its since-watermark.
+   'dead' counts: a retired tail event must not drag the cursor back and get
+   re-claimed."
   (with-ddb (c)
     (let ((stmt (sqlite:prepare-statement c
                   "SELECT COALESCE(MAX(event_id),0) FROM deliveries
-                   WHERE channel=? AND status IN ('sent','claimed')")))
+                   WHERE channel=? AND status IN ('sent','dead','claimed')")))
       (sqlite:bind-parameter stmt 1 name)
       (sqlite:step-statement stmt)
       (let ((v (sqlite:statement-column-value stmt 0)))
@@ -86,21 +89,23 @@
         (sqlite:finalize-statement stmt)
         (or v 1)))))
 
-(defun mark-sent (name event-id)
+(defun mark-status (name event-id status)
   (with-ddb (c)
     (sqlite:execute-non-query c
-      "UPDATE deliveries SET status='sent' WHERE channel=? AND event_id=?"
-      name event-id)))
+      "UPDATE deliveries SET status=? WHERE channel=? AND event_id=?"
+      status name event-id)))
+
+(defun mark-sent (name event-id) (mark-status name event-id "sent"))
 
 (defparameter *max-attempts* 50)
 
 (defun requeue (name event-id attempts)
-  "Exponential backoff, capped; poison events retired after MAX-ATTEMPTS."
+  "Exponential backoff, capped; poison events marked 'dead' after MAX-ATTEMPTS."
   (if (and attempts (>= attempts *max-attempts*))
       (progn
         (format *error-output* "dispatch ~a: event ~a retired after ~a attempts~%"
                 name event-id attempts)
-        (mark-sent name event-id))
+        (mark-status name event-id "dead"))
       (let ((delay (min (* 2 (expt 2 (min (or attempts 1) 16)))
                         *dispatch-max-backoff*)))
         (with-ddb (c)
@@ -213,4 +218,5 @@
     (sb-posix:kill pid 15)))
 
 
-(main)
+;; EVENTD_NO_MAIN=1: load definitions only (tests).
+(unless (uiop:getenv "EVENTD_NO_MAIN") (main))
