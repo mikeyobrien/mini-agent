@@ -5,3 +5,6 @@ events.db-*
 __pycache__/
 jobs/
 eventd.pid
+.env*
+deliveries.db*
+eventd.log
