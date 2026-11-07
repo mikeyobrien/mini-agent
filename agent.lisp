@@ -23,7 +23,8 @@
 ;;; load is a no-op once installed.
 (eval-when (:load-toplevel :execute)
   (unless (find-package :com.inuoe.jzon)
-    (let ((setup (merge-pathnames ".quicklisp/setup.lisp" (user-homedir-pathname))))
+    (let ((setup (or (probe-file (merge-pathnames ".quicklisp/setup.lisp" (user-homedir-pathname)))
+                     (probe-file (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))))
       (unless (probe-file setup)
         (error "mini-agent needs quicklisp at ~a (for com.inuoe.jzon). Install quicklisp first." setup))
       (load setup))
@@ -89,9 +90,10 @@
 (defun load-eventbus ()
   (let ((path (merge-pathnames "eventbus.lisp" (or *load-truename* *default-pathname-defaults*))))
     (when (probe-file path)
-      (load path)
-      (setf *eventbus* t)
-      (funcall (find-symbol "ENSURE-SCHEMA" :eventbus)))))
+      (ignore-errors
+        (load path)
+        (setf *eventbus* t)
+        (funcall (find-symbol "ENSURE-SCHEMA" :eventbus))))))
 
 ;;; HTTP transport: curl for the wire, Lisp for everything else.
 
@@ -272,7 +274,13 @@ Symbols become downcased names sans colon; strings pass through."
                 calls))))
 
 (defun slurp-system-md ()
-  (let ((path (merge-pathnames *system-prompt-path* (uiop:getcwd))))
+  (let* ((candidates (list (merge-pathnames *system-prompt-path* (uiop:getcwd))
+                           (merge-pathnames *system-prompt-path*
+                                            (make-pathname :directory (pathname-directory
+                                                                          (or *load-truename*
+                                                                              *default-pathname-defaults*))))))
+         (path (or (find-if #'probe-file candidates)
+                   (merge-pathnames *system-prompt-path* (uiop:getcwd)))))
     (if (probe-file path)
         (uiop:read-file-string path)
         (error "system prompt ~a not found in ~a" *system-prompt-path* (uiop:getcwd)))))

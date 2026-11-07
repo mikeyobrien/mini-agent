@@ -1,0 +1,13 @@
+{
+    "n_concurrent_trials": 1,
+    "agents": [
+        {
+            "name": "agent-harbor:MiniAgentAgent"
+        }
+    ],
+    "tasks": [
+        {
+            "path": "/tmp/tb21/tasks/fix-git"
+        }
+    ]
+}

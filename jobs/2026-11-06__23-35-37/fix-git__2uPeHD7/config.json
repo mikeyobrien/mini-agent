@@ -1,0 +1,11 @@
+{
+    "task": {
+        "path": "/tmp/tb21/tasks/fix-git"
+    },
+    "trial_name": "fix-git__2uPeHD7",
+    "trials_dir": "jobs/2026-11-06__23-35-37",
+    "agent": {
+        "name": "agent-harbor:MiniAgentAgent"
+    },
+    "job_id": "3bf30c84-4707-427f-b064-190e76724c4d"
+}

@@ -1,0 +1,8 @@
+Running command: apt-get update && apt-get install -y curl
+Command outputs captured
+Running command: set -e; export DEBIAN_FRONTEND=noninteractive; command -v sbcl >/dev/null || { apt-get update -qq && apt-get install -y -qq sbcl ca-certificates; }; if [ ! -f $HOME/quicklisp/setup.lisp ]; then cd /tmp && curl -sO https://beta.quicklisp.org/quicklisp.lisp && sbcl --noinform --non-interactive --load quicklisp.lisp --eval '(quicklisp-quickstart:install)' >/dev/null && rm quicklisp.lisp; fi; sbcl --noinform --non-interactive --load $HOME/quicklisp/setup.lisp --eval '(ql:quickload :com.inuoe.jzon)' --quit
+Command outputs captured
+Running command: cd /app 2>/dev/null || cd $HOME; sbcl --noinform --script /opt/mini-agent/run.lisp 'I just made some changes to my personal site and checked out master, but now I can'\''t find those changes. Please help me find them and merge them into master.
+'
+Command outputs captured
+Collecting main service artifacts

@@ -1,0 +1,14 @@
+{
+    "job_name": "2026-11-06__23-37-44",
+    "n_concurrent_trials": 1,
+    "agents": [
+        {
+            "name": "agent-harbor:MiniAgentAgent"
+        }
+    ],
+    "tasks": [
+        {
+            "path": "/tmp/tb21/tasks/fix-git"
+        }
+    ]
+}
