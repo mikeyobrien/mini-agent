@@ -209,7 +209,7 @@ Symbols become downcased names sans colon; strings pass through."
 
 (defun run (task)
   (load-eventbus)
-  (emit "start" (list :task task))
+  (emit "start" (dict :task task))
   (let ((history
           (list (list (cons :role "user") (cons :content task)))))
     (loop for step from 1 do
@@ -227,7 +227,7 @@ Symbols become downcased names sans colon; strings pass through."
             ;; no tool calls => final answer
             ((null calls)
              (let ((answer (or (gethash "content" msg) "(empty)")))
-               (emit "done" (list :ok t :answer answer))
+               (emit "done" (dict :ok t :answer answer))
                (format t "~a~%" answer))
              (return-from run))
             (t
@@ -237,7 +237,7 @@ Symbols become downcased names sans colon; strings pass through."
                                  (ignore-errors (parse (gethash "arguments" fn)))))
                               (cmd (or (and (hash-table-p args)   (gethash "command" args)) "")))
                  (format t "[step ~a] $ ~a~%" step cmd)
-                 (emit "step" (list :step step :command cmd))
+                 (emit "step" (dict :step step :command cmd))
                  (let ((out (execute cmd)))
                    (setf history
                          (append history
@@ -245,7 +245,7 @@ Symbols become downcased names sans colon; strings pass through."
                                              (cons :tool-call-id   (gethash "id" c))
                                              (cons :content out)))))))))))))
     ;; loop ended without final answer
-    (emit "done" (list :ok nil :reason "budget-exhausted"))
+    (emit "done" (dict :ok nil :reason "budget-exhausted"))
     (when (plusp *max-steps*)
       (format t "(step budget ~a exhausted)~%" *max-steps*))))
 
