@@ -95,20 +95,49 @@
 (defparameter *worker-lock* (sb-thread:make-mutex :name "agent-worker"))
 (defparameter *task-thread* nil)
 
+;;; --- bounded queue -----------------------------------------------------------
+;;; Tasks wait instead of vanishing: depth 3, FIFO, oldest-first. The worker
+;;; is persistent: it drains the queue, then idles on a condition-variable.
+
+(defparameter *queue-lock* (sb-thread:make-mutex :name "agent-q"))
+(defparameter *queue* nil)            ; alist (chat-id . task), front = next
+(defparameter *queue-max* 3)
+(defparameter *worker-thread* nil)
+
+(defun queue-push (chat-id task)
+  (sb-thread:with-mutex (*queue-lock*)
+    (if (>= (length *queue*) *queue-max*)
+        (progn (reply chat-id (format nil "queue full (~a) - task dropped." *queue-max*))
+               nil)
+        (progn
+          (setf *queue* (append *queue* (list (cons chat-id task))))
+          (when (> (length *queue*) 1)
+            (reply chat-id (format nil "queued (~a/~a)." (length *queue*) *queue-max*)))
+          t))))
+
+(defun queue-pop ()
+  (sb-thread:with-mutex (*queue-lock*)
+    (pop *queue*)))
+
+(defun ensure-worker ()
+  (sb-thread:with-mutex (*queue-lock*)
+    (when (or (null *worker-thread*) (not (sb-thread:thread-alive-p *worker-thread*)))
+      (setf *worker-thread*
+            (sb-thread:make-thread
+             (lambda ()
+               (loop
+                 (let ((job (queue-pop)))
+                   (if job
+                       (let ((chat-id (car job)) (task (cdr job)))
+                         (multiple-value-bind (ok text) (run-agent task)
+                           (reply chat-id (if ok text (format nil "&#9888; ~a" text)))))
+                       (sleep 1)))
+               ))
+             :name "agent-worker")))))
+
 (defun spawn-task (chat-id task)
-  "One agent at a time: busy => polite skip. Task thread replies on exit."
-  (sb-thread:with-mutex (*worker-lock*)
-    (when (and *task-thread* (sb-thread:thread-alive-p *task-thread*))
-      (reply chat-id "agent busy - one task at a time; skipped.")
-      (return-from spawn-task))
-    (setf *task-thread*
-          (sb-thread:make-thread
-           (lambda ()
-             (multiple-value-bind (ok text) (run-agent task)
-               (reply chat-id (if ok
-                                  (format nil "~a" text)
-                                  (format nil "&#9888; ~a" text)))))
-           :name "agent-task"))))
+  (ensure-worker)
+  (queue-push chat-id task))
 
 (defun handle (event)
   (let* ((data (getf event :data))
