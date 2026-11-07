@@ -50,8 +50,9 @@
     (format f "~a~%" (sb-posix:getpid)))
   (format t "eventd up; pid in ~a; stdin: \"topic {json}\" | since <id> [glob]~%" *pid-file*)
   (let ((hb (sb-thread:make-thread #'heartbeat :name "heartbeat")))
-    (declare (ignore hb))
-    (repl)))
+    (repl)
+    ;; stdin exhausted (daemon/redirect mode): keep serving beats + bus forever
+    (sb-thread:join-thread hb)))
 
 (defun stop ()
   (let ((pid (with-open-file (f *pid-file* :direction :input) (parse-integer (read-line f)))))
