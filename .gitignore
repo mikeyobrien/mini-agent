@@ -1,3 +1,5 @@
 events.db
 events.db-*
 *.db
+jobs/
+events.db*
