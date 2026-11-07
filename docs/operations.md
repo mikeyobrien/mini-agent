@@ -26,7 +26,7 @@ ran — check the env vars (`run.lisp` sets AUTORUN itself; you don't need to).
 
 ```bash
 cd ~/mini-agent
-nohup sbcl --noinform --load ~/.quicklisp/setup.lisp --script eventd.lisp \
+nohup sbcl --noinform --load ~/.quicklisp/setup.lisp --script src/eventd.lisp \
   </dev/null >>/tmp/eventd.log 2>&1 &
 # pid in eventd.pid; or run under launchd for keepalive (see below)
 ```
