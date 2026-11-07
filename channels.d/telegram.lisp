@@ -88,13 +88,20 @@
 ;;; --- outbound ----------------------------------------------------------------
 
 (defun send-payload (method payload)
-  "Markdown first; plain retry on entity-parse failure (P1 #6)."
+  "Markdown first; on failure retry plain, dropping reply_to too (a bad
+reply_to or entity poisons both modes). Never loops: one fallback each."
   (handler-case (api method payload)
     (error (e)
       (let ((h (copy-hash-table payload)))
         (remhash "parse_mode" h)
-        (format *error-output* "chan-telegram markdown retry: ~a~%" e)
-        (api method h)))))
+        (remhash "reply_to_message_id" h)
+        (format *error-output* "chan-telegram fallback: ~a~%" e)
+        (handler-case (api method h)
+          (error (e2)
+            (let ((h2 (copy-hash-table payload)))
+              (remhash "reply_to_message_id" h2)
+              (format *error-output* "chan-telegram plain: ~a~%" e2)
+              (api method h2))))))))
 
 (defun outbound-dispatch (id ts topic data)
   "telegram/* -> Bot API. T handled; nil/raise => delivery retry."
@@ -108,8 +115,11 @@
        (let* ((chunks (chunk-text text))
               (n (length chunks))
               (base (make-hash-table :test 'equal)))
-         (setf (gethash "chat_id" base) chat
-               (gethash "parse_mode" base) "Markdown")
+         (setf (gethash "chat_id" base) chat)
+         ;; Markdown opt-in via payload; plain text by default - agent output
+         ;; with unbalanced _/* broke entities and poisoned retries.
+         (let ((pm (jget data "parse_mode")))
+           (when pm (setf (gethash "parse_mode" base) pm)))
          (let ((thread (jget data "thread_id")))
            (when thread (setf (gethash "message_thread_id" base) thread)))
          (let ((reply-to (jget data "reply_to")))

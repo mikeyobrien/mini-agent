@@ -235,6 +235,7 @@ and swallow replies. Worst case ~6*(60+120)s; worker blocked but alive."
                            (sleep 1)))
                    (error (e)
                      (stop-typing)
+                     (reply *current-chat* (format nil "&#9888; worker error: ~a" e))
                      (format *error-output* "agent-worker: ~a~%" e)
                      (sleep 2))))
              :name "agent-worker")))))
@@ -251,12 +252,15 @@ and swallow replies. Worst case ~6*(60+120)s; worker blocked but alive."
          (chat (jget data "chat_id")))
     (when (and text chat (plusp (length text)))
       (let ((msg-id (jget data "message_id")))
-        (cond
-          ((uiop:string-prefix-p "! " text)
-           (let ((task (string-trim " " (subseq text 2))))
-             (when (plusp (length task)) (spawn-task chat task msg-id))))
-          ((uiop:string-prefix-p "echo " text) nil) ; echo-responder mirrors these
-          (t (spawn-task chat text msg-id)))))))
+        ;; reply_to only for REAL telegram messages (update_id present);
+        ;; synthetic probes carry fabricated ids that 400 the send.
+        (let ((reply-to (and (jget data "update_id") msg-id)))
+          (cond
+            ((uiop:string-prefix-p "! " text)
+             (let ((task (string-trim " " (subseq text 2))))
+               (when (plusp (length task)) (spawn-task chat task reply-to))))
+            ((uiop:string-prefix-p "echo " text) nil)
+            (t (spawn-task chat text reply-to))))))))
 
 (defun seen-db ()
   (merge-pathnames "agent_seen.db" (uiop:getcwd)))
