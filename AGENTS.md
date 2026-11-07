@@ -1,52 +1,68 @@
-# AGENTS.md — mini-agent
+# mini-agent agent notes
 
-## Language policy: Common Lisp. Full stop.
+Common Lisp (SBCL) project: an agent loop, a sqlite event bus, a bus daemon.
+Read `README.md` for what the thing is; this file is process — how to work here
+without re-learning the same lessons.
 
-The runtime language of this project is **Common Lisp (SBCL)**. New logic goes in
-`.lisp` files — agent, bus, daemon, tests. Do not reach for Python by default.
+## Language: Common Lisp by default
 
-The single sanctioned exception:
+New logic goes in `.lisp` — agent, bus, daemon, tests. The single sanctioned
+Python file is `src/agent-harbor.py`: Harbor loads benchmark agents as Python
+classes, so it exists as their plugin ABI and must stay ~60 lines of
+shell/IO glue. Anything nontrivial belongs in `src/agent.lisp`. A second `.py`
+needs a reason that names a foreign contract.
 
-- `agent-harbor.py` — foreign-interface glue for Harbor's `--agent-import-path`
-  contract (harbor loads agents as Python classes; that is their plugin ABI, not
-  our code). It must stay ~60 lines of shelling/IO only. **No agent logic, no
-  parsing, no string processing of substance in it** — anything nontrivial
-  belongs in `agent.lisp`.
+## Hard-won invariants
 
-Before writing any `.py` here, check this list. If your idea isn't one of
-those two, it's a `.lisp` file.
+Each of these was a real bug. Treat the parenthetical as the test.
 
-## Verification ritual (the mistakes this file exists to prevent)
+1. **Prove runs, don't assume them.** Load-time silence is not success —
+   require `[step N]` lines or the final answer from
+   `sbcl --script src/run.lisp "<real task>"`. *(A quiet exit once masked a
+   dead entrypoint for three "passing" checks.)*
+2. **`uiop:command-line-arguments` excludes the script name** under `--script`
+   (`sbcl --script x.lisp "echo a"` → `("echo a")`). A stray `cdr` silently
+   drops the first task word.
+3. **quicklisp has two homes**: `~/.quicklisp` on this host, `~/quicklisp` in
+   containers. Every bootstrap probes both — see the `eval-when` blocks in
+   `src/agent.lisp` / `src/eventbus.lisp`.
+4. **The agent runs from the task's cwd** (`/app` in trials), never the repo.
+   `SYSTEM.md` resolution is cwd → src/ → repo root; payloads and file writes
+   must not assume repo-cwd either.
+5. **The event bus is optional upstream.** `src/agent.lisp` works with
+   `eventbus.lisp` absent or broken (`load-eventbus` is `ignore-errors`
+   wrapped — keep it that way). Only `eventd` hard-depends on the bus.
+6. **Bound every repeat and verify loop** with `timeout <secs>`, sbcl
+   invocations included. A hung sbcl is a hung CI; a hung check is a lie.
 
-1. **Before claiming anything runs:** `sbcl --script src/run.lisp "<real task>"`.
-   Load-time silence is not success — check for `[step N]` output or the final
-   answer line.
-2. **Before changing run/entry semantics:** remember `uiop:command-line-arguments`
-   under `--script` EXCLUDES the script name (verified: `("echo a")` for
-   `sbcl --script x.lisp "echo a"`). No stray `cdr`.
-3. **quicklisp lives at `~/.quicklisp` on this host, `~/quicklisp` in containers**
-   — any bootstrap must probe both (`eventbus.lisp`, `agent.lisp` already do).
-4. **`SYSTEM.md` resolves cwd-first, then script dir** — tasks run from `/app`;
-   never assume cwd == repo.
-5. **Event bus is optional** — `eventbus.lisp` absent/failing must never fail the
-   agent (`load-eventbus` is ignore-errors wrapped; keep it that way).
-6. **Every repeat/verify loop gets `timeout <secs>`** — including sbcl invocations
-   in tests; a hung sbcl is a hung CI.
+## Payload contract (eventbus)
 
-## Repo hygiene
+`eventbus:publish` takes any jzon-stringifyable structure, but consumers need
+**JSON objects**: build payloads with `dict`, never bare `list` — jzon renders
+plists as arrays. Full API and the cursor/topic conventions:
+[`docs/reference.md`](docs/reference.md) (reach for it when touching the bus,
+writing a consumer, or adding an event type).
 
-- `git status` clean before walking away. `jobs/`, `events.db*`, `__pycache__/`
-  are ignored — never `git add` them explicitly.
-- Commits: imperative, one concern. Push to `origin master` when green
-  (`eval/smoke.sh` + affected pieces).
+## Hygiene
 
-## Where things live
+- `git status` clean before walking away; `jobs/`, `events.db*`,
+  `eventd.pid`, `__pycache__/` are ignored — never `git add`ed.
+- One concern per commit, imperative subject. Push `origin master` when
+  `eval/smoke.sh` and affected pieces are green.
+- Long-lived daemons and repeated probes follow the operations runbook:
+  [`docs/operations.md`](docs/operations.md) (start/stop, health checks,
+  failure→fix table).
 
-| file | role |
+## Map
+
+| path | role |
 |---|---|
-| `src/agent.lisp` | the agent loop (bash tool, history, harbor-facing) |
-| `src/eventbus.lisp` | sqlite pub/sub (`eventbus:publish/since`) |
-| `src/eventd.lisp` | always-on bus daemon (stdin REPL + heartbeat) |
-| `src/run.lisp` | entry; sets AUTORUN, loads agent, invokes main |
-| `src/agent-harbor.py` | harbor glue ONLY (see above) |
-| `eval/smoke.sh` | bounded live smoke suite |
+| `src/agent.lisp` | agent loop: bash tool, history, LM I/O |
+| `src/eventbus.lisp` | sqlite pub/sub — `eventbus:publish` / `since` |
+| `src/eventd.lisp` | resident bus daemon: stdin REPL + heartbeat |
+| `src/run.lisp` | entrypoint: sets AUTORUN, loads agent, calls `main` |
+| `src/agent-harbor.py` | harbor glue only (see *Language*) |
+| `eval/smoke.sh` | bounded live smoke suite — run after any change |
+| `eval/eventbus-test.lisp` | bus regression: publishers, glob, cursor |
+| `docs/reference.md` | API reference + payload/cursor contracts |
+| `docs/operations.md` | runbook: daemon lifecycle, health, failure triage |
