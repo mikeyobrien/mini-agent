@@ -65,6 +65,8 @@ writing a consumer, or adding an event type).
 | `test/smoke.sh` | bounded live smoke suite — run after any change |
 | `test/eventbus-test.lisp` | bus regression: publishers, glob, cursor |
 | `test/skills-test.lisp` | skill discovery + prompt wiring regression |
+| `test/agent-test.lisp` | agent loop units: `execute` output fidelity |
+| `test/telegram-harness.lisp` | Telegram UX e2e: real eventd vs fake Bot API + LM; `HARNESS_LIVE=1` for the real LM |
 | `test/dispatch-test.lisp` | delivery retry/dead-letter regression (`EVENTD_NO_MAIN=1`, scratch cwd) |
 | `skills/<name>/SKILL.md` | skills listed in the system prompt (`rex` ships) |
 | `docs/reference.md` | API reference + payload/cursor contracts |

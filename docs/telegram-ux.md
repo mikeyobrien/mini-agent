@@ -61,9 +61,12 @@ impact per unit of work. P0/P1 are small, local diffs; P2/P3 slightly larger.
 
 ## Verification
 
-- `test/` smoke path for daemon boot; then live: text -> ack <1s, typing
-  during run, threaded answer; 5k-char answer arrives as chunks; kill
-  markdown in a reply to see fallback; `/status` `/cancel` `/memory`.
+- `timeout 450 sbcl --script test/telegram-harness.lisp [scenario...]` boots
+  the real eventd against a fake Bot API + LM and checks ack, typing start/stop,
+  threaded answer, progress throttle, chunking, reply_to fallback, LM failure,
+  queue acks and verbatim text; prints per-chat transcripts and UX timings
+  (ack target <1s). `HARNESS_LIVE=1` swaps in the real LM from `.env.agent`.
+- Still manual: `/status` `/cancel` `/memory` (P2, not built).
 - No core edits required for P0-P2: telegram.lisp + agent-responder.lisp
   (+ one new optional hook file). `chanreg` re-registers by name, so
   hot-reload is drop-in.
