@@ -62,7 +62,7 @@ class MiniAgentAgent(BaseInstalledAgent):
             env=env,
             command=(
                 "cd /app 2>/dev/null || cd $HOME; "
-                "sbcl --noinform --script /opt/mini-agent/run.lisp "
+                "sbcl --noinform --script /opt/mini-agent/src/run.lisp "
                 + "'" + instruction.replace("'", "'\\''") + "'"
             ),
             timeout_sec=None,
