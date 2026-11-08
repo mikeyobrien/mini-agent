@@ -58,13 +58,13 @@
      (unwind-protect (progn ,@body) (sqlite:disconnect ,conn))))
 
 (defun channel-cursor (name)
-  "Highest sent/dead/claimed event id for channel NAME — its since-watermark.
-   'dead' counts: a retired tail event must not drag the cursor back and get
-   re-claimed."
+  "Highest event id channel NAME has a row for, any status — its since-watermark.
+   Pending/dead rows count: a failed tail event must come back only through
+   due-claims (honoring next_at), never as 'fresh' on the next tick."
   (with-ddb (c)
     (let ((stmt (sqlite:prepare-statement c
                   "SELECT COALESCE(MAX(event_id),0) FROM deliveries
-                   WHERE channel=? AND status IN ('sent','dead','claimed')")))
+                   WHERE channel=?")))
       (sqlite:bind-parameter stmt 1 name)
       (sqlite:step-statement stmt)
       (let ((v (sqlite:statement-column-value stmt 0)))

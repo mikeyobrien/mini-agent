@@ -36,6 +36,19 @@
     (check "dead tail event holds the cursor (no re-claim from 3)"
            (= (channel-cursor "t") 7))
     (check "other channels unaffected" (= (channel-cursor "other") 0))
+    ;; Full tick against a down channel: a failed newest event must wait out
+    ;; its backoff (>= 4s after attempt 1), not be re-sent as "fresh" next tick.
+    (let ((tries 0))
+      (chanreg:register "down" "harness/down" (lambda (&rest _) (declare (ignore _))
+                                                 (incf tries) (error "channel down")))
+      (let ((id (eventbus:publish "harness/down" (make-hash-table))))
+        (dispatch-channel (chanreg:find-channel "down"))
+        (dispatch-channel (chanreg:find-channel "down"))
+        (dispatch-channel (chanreg:find-channel "down"))
+        (check "backoff honored for a failed tail event (1 send in 3 immediate ticks)"
+               (= tries 1))
+        (check "failed tail event is pending, awaiting its retry"
+               (equal (status-of "down" id) "pending"))))
     (uiop:delete-file-if-exists *dispatch-db*)))
 
 (format t "dispatch-test: ~a failure(s)~%" *fails*)
