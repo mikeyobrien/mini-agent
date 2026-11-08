@@ -14,7 +14,8 @@
 
 (defpackage :mini-agent
   (:use :cl)
-  (:import-from #:uiop #:getenv #:command-line-arguments))
+  (:import-from #:uiop #:getenv #:command-line-arguments)
+  (:export #:main #:run #:*context* #:*base-url* #:*model*))
 
 (in-package :mini-agent)
 
@@ -73,6 +74,10 @@
 ;; Extra skill roots, colon-separated, searched before the repo's skills/.
 ;; e.g. MINI_AGENT_SKILLS_PATH=~/.agents/skills to share Codex/Pi skills.
 (defparameter *skills-path* (env-str "MINI_AGENT_SKILLS_PATH" ""))
+;; Declared here, ahead of RUN: a LET compiled before the DEFVAR binds a
+;; lexical, and BUILD-REQUEST would never see the skills.
+(defvar *skills-section* nil
+  "Rendered skills section; computed once per run, appended to SYSTEM.md.")
 
 ;;; ---------------------------------------------------------------------------
 ;;; JSON: com.inuoe.jzon (parse/stringify imported above).
@@ -84,8 +89,14 @@
 
 (defvar *eventbus* nil)
 
+(defvar *context* nil
+  "Plist of string keys stamped onto every agent/* payload, so a host can
+   tie telemetry to its own request: (\"chat_id\" 42).")
+
 (defun emit (event payload)
   (when *eventbus*
+    (loop for (k v) on *context* by #'cddr
+          do (setf (gethash k payload) v))
     (ignore-errors
       (funcall (find-symbol "PUBLISH" :eventbus)
                (format nil "agent/~a" event)
@@ -275,12 +286,15 @@ Symbols become downcased names sans colon; strings pass through."
     (error (e) (format nil "Error: ~a" e))))
 
 (defun run (task)
+  "Work TASK to an answer. Prints each step and the answer; returns
+(values answer t), or (values reason nil) when the step budget runs out."
   (load-eventbus)
   (emit "start" (dict :task task))
   (let ((*skills-section* (skills-prompt (discover-skills)))
         (history
           (list (list (cons :role "user") (cons :content task)))))
-    (loop for step from 1 do
+    (loop for step from 1
+          while (or (zerop *max-steps*) (<= step *max-steps*)) do
       (let* ((msg (query-lm history))
              (tcalls   (gethash "tool_calls" msg))
              (encoded (and tcalls (canonical-tool-calls msg))))
@@ -296,14 +310,14 @@ Symbols become downcased names sans colon; strings pass through."
             ((null calls)
              (let ((answer (or (gethash "content" msg) "(empty)")))
                (emit "done" (dict :ok t :answer answer))
-               (format t "~a~%" answer))
-             (return-from run))
+               (format t "~a~%" answer)
+               (return-from run (values answer t))))
             (t
              (dolist (c calls)
                (let* ((fn   (gethash "function" c))
-                      (args (and   (gethash "arguments" fn)
+                      (args (and (gethash "arguments" fn)
                                  (ignore-errors (parse (gethash "arguments" fn)))))
-                              (cmd (or (and (hash-table-p args)   (gethash "command" args)) "")))
+                      (cmd  (or (and (hash-table-p args) (gethash "command" args)) "")))
                  (format t "[step ~a] $ ~a~%" step cmd)
                  (emit "step" (dict :step step :command cmd))
                  (let ((out (execute cmd)))
@@ -314,8 +328,9 @@ Symbols become downcased names sans colon; strings pass through."
                                              (cons :content out)))))))))))))
     ;; loop ended without final answer
     (emit "done" (dict :ok nil :reason "budget-exhausted"))
-    (when (plusp *max-steps*)
-      (format t "(step budget ~a exhausted)~%" *max-steps*))))
+    (let ((reason (format nil "step budget ~a exhausted" *max-steps*)))
+      (format t "(~a)~%" reason)
+      (values reason nil))))
 
 (defun tool-callsp (x) (and (hash-table-p x) (gethash "function" x nil)))
 
@@ -442,9 +457,6 @@ matches a skill's description, `cat` its SKILL.md first and follow it. ~
 Paths inside a skill are relative to its SKILL.md's directory.~%~%~
 ~:{- **~a**: ~a (`~a`)~%~}"
               skills)))
-
-(defvar *skills-section* nil
-  "Rendered skills section; computed once per run, appended to SYSTEM.md.")
 
 (defun main ()
   (unless *base-url*
