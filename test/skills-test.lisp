@@ -1,5 +1,5 @@
 ;;;; skills-test.lisp — skill discovery regression. No LM needed.
-;;;;   timeout 60 sbcl --script test/skills-test.lisp   ; exit 0 = pass
+;;;;   timeout -k 5 60 sbcl --script test/skills-test.lisp   ; exit 0 = pass
 (require :uiop)
 (require :sb-posix)
 ;; agent.lisp runs main at load when MINI_AGENT_AUTORUN is set (smoke.sh and

@@ -32,8 +32,10 @@ Each of these was a real bug. Treat the parenthetical as the test.
 5. **The event bus is optional upstream.** `src/agent.lisp` works with
    `eventbus.lisp` absent or broken (`load-eventbus` is `ignore-errors`
    wrapped — keep it that way). Only `eventd` hard-depends on the bus.
-6. **Bound every repeat and verify loop** with `timeout <secs>`, sbcl
+6. **Bound every repeat and verify loop** with `timeout -k 5 <secs>`, sbcl
    invocations included. A hung sbcl is a hung CI; a hung check is a lie.
+   *(-k: a multithreaded sbcl can sit on SIGTERM; one outlived its
+   `timeout 60` by an hour.)*
 7. **Declare a special before anything binds it.** `load` compiles form by
    form: a `let` of `*x*` compiled ahead of `(defvar *x*)` is a lexical, with
    no error. *(Skills were absent from every real prompt while the unit test,
@@ -77,7 +79,7 @@ writing a consumer, or adding an event type).
 | `test/skills-test.lisp` | skill discovery + prompt wiring regression |
 | `test/agent-test.lisp` | agent loop units, LM stubbed: `execute`, `run` values, step budget, skills in prompt |
 | `test/telegram-harness.lisp` | Telegram UX e2e: real eventd vs fake Bot API + LM; `HARNESS_LIVE=1` for the real LM |
-| `test/dispatch-test.lisp` | delivery retry/dead-letter regression (`EVENTD_NO_MAIN=1`, scratch cwd) |
+| `test/dispatch-test.lisp` | delivery retry/dead-letter regression (scratch cwd) |
 | `skills/<name>/SKILL.md` | skills listed in the system prompt (`rex` ships) |
 | `docs/reference.md` | API reference + payload/cursor contracts |
 | `docs/operations.md` | runbook: daemon lifecycle, health, failure triage |

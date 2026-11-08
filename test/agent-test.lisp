@@ -1,5 +1,5 @@
 ;;;; agent-test.lisp — agent loop units; the LM is stubbed, nothing networked.
-;;;;   timeout 60 sbcl --script test/agent-test.lisp   ; exit 0 = pass
+;;;;   timeout -k 5 60 sbcl --script test/agent-test.lisp   ; exit 0 = pass
 (require :uiop)
 (require :sb-posix)
 (sb-posix:unsetenv "MINI_AGENT_AUTORUN")   ; else loading runs main and quits 0

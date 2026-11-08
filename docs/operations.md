@@ -15,8 +15,8 @@ day-2: running, observing, and troubleshooting the agent + bus on a host.
 ```bash
 export MINI_AGENT_BASE_URL=http://spark-1:8000/v1
 export MINI_AGENT_MODEL=my-model
-sbcl --script run.lisp "fix the flaky test in foo.py"     # foreground
-MINI_AGENT_TIMEOUT=300 timeout 900 sbcl --script run.lisp "big task"  # bounded
+sbcl --script src/run.lisp "fix the flaky test in foo.py"     # foreground
+MINI_AGENT_TIMEOUT=300 timeout -k 5 900 sbcl --script src/run.lisp "big task"  # bounded
 ```
 
 Exit 0 + final answer on stdout = success. Load-time silence means nothing

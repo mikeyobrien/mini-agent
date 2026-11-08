@@ -1,5 +1,5 @@
 ;;;; eventbus-test.lisp — bus regression: glob, cursor, payloads, tail.
-;;;;   cd $(mktemp -d) && timeout 60 sbcl --script <repo>/test/eventbus-test.lisp
+;;;;   cd $(mktemp -d) && timeout -k 5 60 sbcl --script <repo>/test/eventbus-test.lisp
 ;;;; Run from a scratch cwd: the bus lives in ./events.db.
 (load (merge-pathnames "../src/eventbus.lisp" *load-truename*))
 (in-package :eventbus)

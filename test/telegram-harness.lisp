@@ -6,9 +6,9 @@
 ;;;; getUpdates and judge what the user would see: every Bot API call is
 ;;;; recorded with a timestamp.
 ;;;;
-;;;;   timeout 300 sbcl --script test/telegram-harness.lisp            ; all
-;;;;   timeout 300 sbcl --script test/telegram-harness.lisp basic chunks
-;;;;   HARNESS_LIVE=1 timeout 600 sbcl --script test/telegram-harness.lisp
+;;;;   timeout -k 5 300 sbcl --script test/telegram-harness.lisp            ; all
+;;;;   timeout -k 5 300 sbcl --script test/telegram-harness.lisp basic chunks
+;;;;   HARNESS_LIVE=1 timeout -k 5 600 sbcl --script test/telegram-harness.lisp
 ;;;;     ; real LM from .env.agent, scenario "live" only
 ;;;;
 ;;;; Exit 0 = every CHECK passed. UX lines (latencies vs targets) are reported,

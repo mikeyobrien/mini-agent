@@ -1,7 +1,11 @@
 ;;;; dispatch-test.lisp — delivery retirement regression. No network.
-;;;;   cd $(mktemp -d) && EVENTD_NO_MAIN=1 timeout 60 sbcl --script <repo>/test/dispatch-test.lisp
+;;;;   cd $(mktemp -d) && timeout -k 5 60 sbcl --script <repo>/test/dispatch-test.lisp
 ;;;; Run from a scratch cwd: eventd opens events.db / deliveries.db there.
 (require :uiop)
+;; Definitions only, and no channels.d/: a test that loaded the real Telegram
+;; connector and reached MAIN once long-polled the live bot for an hour.
+(setf (uiop:getenv "EVENTD_NO_MAIN") "1"
+      (uiop:getenv "CHANREG_DIR") "/nonexistent/")
 (load (merge-pathnames ".quicklisp/setup.lisp" (user-homedir-pathname)) :if-does-not-exist nil)
 (load (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname)) :if-does-not-exist nil)
 (load (merge-pathnames "../src/eventd.lisp" *load-truename*))

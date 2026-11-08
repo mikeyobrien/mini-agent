@@ -70,7 +70,7 @@ Loads sibling `eventbus.lisp` if present, sets `*eventbus*`, calls
   `>`/`|` blocks; nested maps ignored.
 - `skills-prompt (skills)` — the `## Skills` section; `run` binds it to
   `*skills-section*` once per run and `build-request` appends it to SYSTEM.md.
-- Regression: `timeout 60 sbcl --script test/skills-test.lisp`.
+- Regression: `timeout -k 5 60 sbcl --script test/skills-test.lisp`.
 
 ### Internals worth knowing
 

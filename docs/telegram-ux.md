@@ -45,7 +45,7 @@ Grounded in `channels.d/telegram.lisp`, `channels.d/agent-responder.lisp`,
 
 ## Verification
 
-- `timeout 450 sbcl --script test/telegram-harness.lisp [scenario...]` boots
+- `timeout -k 5 450 sbcl --script test/telegram-harness.lisp [scenario...]` boots
   the real eventd against a fake Bot API + LM and checks ack, typing start/stop,
   threaded answer, progress throttle, chunking, reply_to fallback, LM failure,
   queue acks and verbatim text; prints per-chat transcripts and UX timings
