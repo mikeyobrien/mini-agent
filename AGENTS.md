@@ -34,12 +34,20 @@ Each of these was a real bug. Treat the parenthetical as the test.
    wrapped — keep it that way). Only `eventd` hard-depends on the bus.
 6. **Bound every repeat and verify loop** with `timeout <secs>`, sbcl
    invocations included. A hung sbcl is a hung CI; a hung check is a lie.
+7. **Declare a special before anything binds it.** `load` compiles form by
+   form: a `let` of `*x*` compiled ahead of `(defvar *x*)` is a lexical, with
+   no error. *(Skills were absent from every real prompt while the unit test,
+   binding after load, passed.)*
+8. **Under `--script`, an error escaping any thread exits the process.**
+   Daemon threads start through `eventd::spawn`, `chanreg:run-boot-hooks` or
+   `eventbus:tail`, which log instead.
 
 ## Payload contract (eventbus)
 
 `eventbus:publish` takes any jzon-stringifyable structure, but consumers need
-**JSON objects**: build payloads with `dict`, never bare `list` — jzon renders
-plists as arrays. Full API and the cursor/topic conventions:
+**JSON objects**: build payloads with `eventbus:dict`, never bare `list` — jzon
+renders plists as arrays. Consumers are `eventbus:tail` calls, not hand-rolled
+poll loops. Full API and the cursor/topic conventions:
 [`docs/reference.md`](docs/reference.md) (reach for it when touching the bus,
 writing a consumer, or adding an event type).
 
@@ -58,14 +66,16 @@ writing a consumer, or adding an event type).
 | path | role |
 |---|---|
 | `src/agent.lisp` | agent loop: bash tool, history, LM I/O |
-| `src/eventbus.lisp` | sqlite pub/sub — `eventbus:publish` / `since` |
+| `src/eventbus.lisp` | sqlite pub/sub — `publish` / `since` / `tail` |
+| `src/chanreg.lisp` | channel registry + boot hooks; loads `channels.d/` |
+| `channels.d/*.lisp` | Telegram channel, agent/echo responders, progress pings |
 | `src/eventd.lisp` | resident bus daemon: stdin REPL + heartbeat |
 | `src/run.lisp` | entrypoint: sets AUTORUN, loads agent, calls `main` |
 | `src/agent-harbor.py` | harbor glue only (see *Language*) |
 | `test/smoke.sh` | bounded live smoke suite — run after any change |
-| `test/eventbus-test.lisp` | bus regression: publishers, glob, cursor |
+| `test/eventbus-test.lisp` | bus regression: glob, cursor, payloads, `tail` wakeups (scratch cwd) |
 | `test/skills-test.lisp` | skill discovery + prompt wiring regression |
-| `test/agent-test.lisp` | agent loop units: `execute` output fidelity |
+| `test/agent-test.lisp` | agent loop units, LM stubbed: `execute`, `run` values, step budget, skills in prompt |
 | `test/telegram-harness.lisp` | Telegram UX e2e: real eventd vs fake Bot API + LM; `HARNESS_LIVE=1` for the real LM |
 | `test/dispatch-test.lisp` | delivery retry/dead-letter regression (`EVENTD_NO_MAIN=1`, scratch cwd) |
 | `skills/<name>/SKILL.md` | skills listed in the system prompt (`rex` ships) |

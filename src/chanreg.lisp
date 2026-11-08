@@ -3,7 +3,8 @@
 ;;;; A channel is (name poll-glob send-fn). The dispatcher (eventd) owns
 ;;;; cursors, retries, backoff; connectors own format translation only.
 ;;;; Connectors self-register by loading files from channels.d/ -- adding a
-;;;; channel is a file drop, never a core edit.
+;;;; channel is a file drop, never a core edit. Files there are loaded after
+;;;; eventbus and chanreg, so they may name eventbus:/chanreg: symbols directly.
 
 (require :uiop)
 
@@ -11,9 +12,10 @@
   (:use :cl)
   (:import-from :uiop #:getenv)
   (:export #:channel #:channel-name #:channel-poll-glob #:channel-send-fn
-           #:channel-start-fn #:*boot-hooks*
-           #:register #:find-channel #:all-channels #:run-boot-hooks
-           #:load-connectors #:connector-dir))
+           #:channel-start-fn
+           #:register #:find-channel #:all-channels
+           #:add-boot-hook #:run-boot-hooks
+           #:load-connectors #:connector-dir #:repo-root))
 
 (in-package :chanreg)
 
@@ -46,21 +48,37 @@
   (loop for v being the hash-values of *registry* collect v))
 
 (defvar *boot-hooks* nil
-  "List of zero-arg thunks run in their own threads after daemon boot.
-   Consumers (responders, bridges) push onto this in their connector file;
-   they see the bus without being channels.")
+  "Alist name -> zero-arg thunk, in registration order. Each runs in its own
+   thread after daemon boot. Consumers (responders, bridges) add themselves
+   from their connector file; they see the bus without being channels.")
+
+(defun add-boot-hook (name thunk)
+  "Idempotent by name, like REGISTER: reloading a file replaces its hook."
+  (let ((cell (assoc name *boot-hooks* :test #'string=)))
+    (if cell
+        (setf (cdr cell) thunk)
+        (setf *boot-hooks* (append *boot-hooks* (list (cons name thunk)))))))
 
 (defun run-boot-hooks ()
-  (dolist (thunk (reverse *boot-hooks*))
-    (ignore-errors
-      (sb-thread:make-thread thunk :name "chanreg-boot-hook"))))
+  ;; Under --script an unhandled error in any thread exits the daemon: a
+  ;; failing hook is logged and ends alone.
+  (loop for (name . thunk) in *boot-hooks*
+        do (let ((name name) (thunk thunk))
+             (sb-thread:make-thread
+              (lambda ()
+                (handler-case (funcall thunk)
+                  (error (e) (format *error-output* "~a: hook died: ~a~%" name e))))
+              :name name))))
+
+(defun repo-root ()
+  "The checkout this file was loaded from (src/..)."
+  (make-pathname :directory (butlast (pathname-directory *source-dir*))
+                 :defaults *source-dir*))
 
 (defun connector-dir ()
-  "channels.d/ beside src/ (repo root), $CHANREG_DIR, or cwd."
+  "$CHANREG_DIR, else channels.d/ in the repo root."
   (or (and (getenv "CHANREG_DIR") (pathname (getenv "CHANREG_DIR")))
-      (let ((repo-root (make-pathname :directory
-                                      (butlast (pathname-directory *source-dir*)))))
-        (merge-pathnames "channels.d/" repo-root))))
+      (merge-pathnames "channels.d/" (repo-root))))
 
 (defun load-connectors (&optional (dir (connector-dir)))
   "Load every .lisp in dir. One broken connector must not kill the daemon:

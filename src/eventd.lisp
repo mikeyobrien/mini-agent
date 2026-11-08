@@ -12,8 +12,9 @@
 (chanreg:load-connectors)
 
 (defpackage :eventd (:use :cl) (:import-from :eventbus #:publish #:since))
-(in-package :eventd)(defparameter *pid-file* (merge-pathnames "eventd.pid" (uiop:getcwd)))
-(defparameter *log* *standard-output*)
+(in-package :eventd)
+
+(defparameter *pid-file* (merge-pathnames "eventd.pid" (uiop:getcwd)))
 
 ;;; Heartbeat is a liveness tick, not an event. The 30s cadence proves the
 ;;; process is alive for monitors; real events flow the instant they happen
@@ -22,8 +23,6 @@
   (parse-integer (or (uiop:getenv "EVENTD_BEAT_SECONDS") "30")))
 
 ;;; --- sqlite for delivery state -----------------------------------------------
-
-(require :sqlite)
 
 (defparameter *dispatch-db* (merge-pathnames "deliveries.db" (uiop:getcwd)))
 (defparameter *dispatch-poll-seconds*
@@ -62,14 +61,9 @@
    Pending/dead rows count: a failed tail event must come back only through
    due-claims (honoring next_at), never as 'fresh' on the next tick."
   (with-ddb (c)
-    (let ((stmt (sqlite:prepare-statement c
-                  "SELECT COALESCE(MAX(event_id),0) FROM deliveries
-                   WHERE channel=?")))
-      (sqlite:bind-parameter stmt 1 name)
-      (sqlite:step-statement stmt)
-      (let ((v (sqlite:statement-column-value stmt 0)))
-        (sqlite:finalize-statement stmt)
-        (or v 0)))))
+    (or (sqlite:execute-single c
+          "SELECT MAX(event_id) FROM deliveries WHERE channel=?" name)
+        0)))
 
 (defun claim (name event-id)
   "Record an attempt; returns attempts count after the claim."
@@ -80,14 +74,8 @@
        ON CONFLICT(channel,event_id) DO UPDATE SET
          status='claimed', attempts=deliveries.attempts+1"
       name event-id)
-    (let ((stmt (sqlite:prepare-statement c
-                  "SELECT attempts FROM deliveries WHERE channel=? AND event_id=?")))
-      (sqlite:bind-parameter stmt 1 name)
-      (sqlite:bind-parameter stmt 2 event-id)
-      (sqlite:step-statement stmt)
-      (let ((v (sqlite:statement-column-value stmt 0)))
-        (sqlite:finalize-statement stmt)
-        (or v 1)))))
+    (sqlite:execute-single c
+      "SELECT attempts FROM deliveries WHERE channel=? AND event_id=?" name event-id)))
 
 (defun mark-status (name event-id status)
   (with-ddb (c)
@@ -117,79 +105,88 @@
   "Ids this channel may attempt now: claimed-then-crashed or backoff expired.
    Bounded per tick so one flooding channel cannot starve the rest."
   (with-ddb (c)
-    (let ((stmt (sqlite:prepare-statement c
-                  "SELECT event_id FROM deliveries
-                   WHERE channel=? AND status IN ('pending','claimed') AND next_at<=?
-                   LIMIT 100"))
-          acc)
-      (sqlite:bind-parameter stmt 1 name)
-      (sqlite:bind-parameter stmt 2 now)
-      (loop while (sqlite:step-statement stmt)
-            do (push (sqlite:statement-column-value stmt 0) acc))
-      (sqlite:finalize-statement stmt)
-      (nreverse acc))))
+    (mapcar #'first
+            (sqlite:execute-to-list c
+              "SELECT event_id FROM deliveries
+               WHERE channel=? AND status IN ('pending','claimed') AND next_at<=?
+               ORDER BY event_id LIMIT 100"
+              name now))))
+
+(defun deliver (channel event)
+  "One attempt at EVENT on CHANNEL: sent, or requeued with backoff."
+  (let* ((name (chanreg:channel-name channel))
+         (id (getf event :id))
+         (attempts (claim name id)))
+    (if (ignore-errors
+          (funcall (chanreg:channel-send-fn channel)
+                   id (getf event :ts) (getf event :topic) (getf event :data)))
+        (mark-sent name id)
+        (requeue name id attempts))))
 
 (defun dispatch-channel (channel)
-  "One tick for one channel. Never raises: a broken connector degrades to
-   backoff, it cannot take the daemon down."
+  "One tick for one channel: due retries, then events past its cursor (the
+   two never overlap - every retry id is at or below the cursor). Never
+   raises: a broken connector degrades to backoff, not a dead daemon."
   (handler-case
-      (let* ((name (chanreg:channel-name channel))
-             (now (get-universal-time))
-             (retries (due-claims name now))
-             (cursor (channel-cursor name))
-             (retries-set (when retries (nreverse (copy-list retries))))
-             (fresh (remove-if (lambda (id) (member id retries))
-                               (mapcar #'(lambda (e) (getf e :id))
-                                       (eventbus:since cursor
-                                                      (chanreg:channel-poll-glob channel))))))
-        (declare (ignore retries-set))
-        (dolist (id (append retries fresh))
-          ;; Re-fetch the single event: id may have been backoff-queued long ago.
-          (let ((event (find id (eventbus:since (1- id)) :key #'(lambda (e) (getf e :id)))))
-            (when event
-              (let ((attempts (claim name id)))
-                (if (ignore-errors
-                      (funcall (chanreg:channel-send-fn channel)
-                               id (getf event :ts) (getf event :topic) (getf event :data)))
-                    (mark-sent name id)
-                    (requeue name id attempts)))))))
+      (let ((name (chanreg:channel-name channel)))
+        (dolist (id (due-claims name (get-universal-time)))
+          (let ((event (eventbus:get-event id)))
+            (if event
+                (deliver channel event)
+                (mark-status name id "dead"))))   ; bus rebuilt under it
+        (dolist (event (eventbus:since (channel-cursor name)
+                                       (chanreg:channel-poll-glob channel)))
+          (deliver channel event)))
     (error (e)
       (format *error-output* "dispatch ~a: ~a~%" (chanreg:channel-name channel) e))))
 
 (defun dispatcher ()
+  "Delivers on every publish in this image; polls for outside writers and
+   due retries every *dispatch-poll-seconds*."
   (loop
-    (dolist (ch (chanreg:all-channels))
-      (dispatch-channel ch))
-    (sleep *dispatch-poll-seconds*)))
+    (let ((seen (eventbus:publish-count)))
+      (dolist (ch (chanreg:all-channels))
+        (dispatch-channel ch))
+      (eventbus:await-publish seen *dispatch-poll-seconds*))))
 
 (defun heartbeat ()
+  "Liveness tick, forever. Nothing escapes it."
   (loop
-    ;; Never let anything kill the liveness thread: catch, log, continue.
-    (handler-case
-        (progn (publish "eventd/beat" (list :ts (get-universal-time)))
-               #+nil (format *error-output* "beat ok~%"))
-      (error (e) (format *error-output* "heartbeat: ~a~%" e))
-      (serious-condition (e) (format *error-output* "heartbeat serious: ~a~%" e)))
+    (handler-case (publish "eventd/beat" (eventbus:dict "ts" (get-universal-time)))
+      (serious-condition (e) (format *error-output* "heartbeat: ~a~%" e)))
     (sleep *beat-interval*)))
 
+(defun repl-line (line)
+  (let* ((sp (position #\Space line))
+         (cmd (if sp (subseq line 0 sp) line))
+         (rest (when sp (subseq line (1+ sp)))))
+    (cond
+      ((string= cmd "since")
+       (let* ((parts (and rest (uiop:split-string rest)))
+              (id (parse-integer (or (first parts) "0")))
+              (glob (second parts)))
+         (dolist (e (eventbus:since id glob))
+           (format t "~a~%" (com.inuoe.jzon:stringify
+                              (eventbus:dict "id" (getf e :id) "topic" (getf e :topic)
+                                             "data" (getf e :data)))))))
+      (t (publish cmd (and rest (com.inuoe.jzon:parse rest)))
+         (format t "ok~%")))))
+
 (defun repl ()
-  (loop
-    (let ((line (read-line *standard-input* nil nil)))
-      (unless line (return))
-      (let* ((sp (position #\Space line))
-             (cmd (if sp (subseq line 0 sp) line))
-             (rest (when sp (subseq line (1+ sp)))))
-        (cond
-          ((string= cmd "since")
-           (let* ((parts (and rest (uiop:split-string rest)))
-                  (id (parse-integer (or (first parts) "0")))
-                  (glob (second parts)))
-             (dolist (e (eventbus:since id glob))
-               (format t "~a~%" (com.inuoe.jzon:stringify
-                                  (list :id (getf e :id) :topic (getf e :topic)
-                                        :data (getf e :data)))))))
-          (t (publish cmd (and rest (com.inuoe.jzon:parse rest)))
-             (format t "ok~%")))))))
+  "stdin commands until EOF. A bad line is reported, never fatal."
+  (loop for line = (read-line *standard-input* nil nil)
+        while line
+        do (handler-case (repl-line line)
+             (error (e) (format t "error: ~a~%" e)))
+           (finish-output)))
+
+(defun spawn (name fn)
+  "Thread running FN; under --script an escaped error would exit the daemon."
+  (sb-thread:make-thread
+   (lambda ()
+     (handler-case (funcall fn)
+       (error (e) (format *error-output* "~a: died: ~a~%" name e))))
+   :name name))
 
 (defun main ()
   (with-open-file (f *pid-file* :direction :output :if-exists :supersede)
@@ -197,21 +194,15 @@
   (ensure-deliveries-schema)
   (format t "eventd up; pid in ~a; channels: ~{~a~^, ~}; stdin: \"topic {json}\" | since <id> [glob]~%"
           *pid-file* (mapcar #'chanreg:channel-name (chanreg:all-channels)))
+  (finish-output)
   (chanreg:run-boot-hooks)
-  (let ((hb (sb-thread:make-thread #'heartbeat :name "heartbeat"))
-        (dp (sb-thread:make-thread #'dispatcher :name "dispatcher"))
-        (starts (remove-if-not #'chanreg:channel-start-fn (chanreg:all-channels))))
-    (dolist (ch starts)
-      (ignore-errors
-        (sb-thread:make-thread (chanreg:channel-start-fn ch)
-                               :name (format nil "~a-start" (chanreg:channel-name ch)))))
-    (repl)
-    ;; stdin exhausted (daemon/redirect mode): keep serving beats + bus forever
-    ;; A dead side thread must not kill the daemon: log and keep serving.
-    (ignore-errors (sb-thread:join-thread hb))
-    (ignore-errors (sb-thread:join-thread dp))
-    ;; If heartbeat died, run it inline so liveness continues.
-    (loop (funcall #'heartbeat))))
+  (spawn "dispatcher" #'dispatcher)
+  (dolist (ch (chanreg:all-channels))
+    (when (chanreg:channel-start-fn ch)
+      (spawn (format nil "~a-start" (chanreg:channel-name ch))
+             (chanreg:channel-start-fn ch))))
+  (spawn "repl" #'repl)               ; returns at stdin EOF (daemon mode)
+  (heartbeat))
 
 (defun stop ()
   (let ((pid (with-open-file (f *pid-file* :direction :input) (parse-integer (read-line f)))))

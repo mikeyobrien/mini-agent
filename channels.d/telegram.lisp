@@ -1,13 +1,15 @@
 ;;;; channels.d/telegram.lisp -- Telegram connector. Self-registering.
-;;;; Outbound: any event on telegram/outbound -> sendMessage.
-;;;;   payload: {"text": "...", "chat_id": N}   (thread/thread_id optional)
+;;;; Outbound: telegram/outbound -> sendMessage
+;;;;   payload: {"text": "...", "chat_id": N}  (reply_to, thread_id, parse_mode optional)
+;;;;   telegram/typing {"chat_id": N} -> sendChatAction typing (~5s)
 ;;;; Inbound: getUpdates long-poll -> publish "telegram/inbound".
-;;;; Token: TELEGRAM_BOT_TOKEN env, or .env.telegram next to the daemon.
+;;;; Token: TELEGRAM_BOT_TOKEN env, or .env.telegram in repo root, cwd or $HOME.
 ;;;; TELEGRAM_API_BASE overrides https://api.telegram.org (test harness).
 
 (defpackage :chan-telegram
   (:use :cl)
-  (:import-from :uiop #:getenv))
+  (:import-from :uiop #:getenv)
+  (:import-from :eventbus #:dict #:jget))
 
 (in-package :chan-telegram)
 
@@ -15,10 +17,7 @@
 
 (defun env-file-token ()
   "TELEGRAM_BOT_TOKEN from .env.telegram: repo root, cwd, or $HOME."
-  (dolist (base (list #P"/Users/rook/mini-agent/"
-                      (uiop:getcwd)
-                      (and (getenv "HOME")
-                           (pathname (concatenate 'string (getenv "HOME") "/")))))
+  (dolist (base (list (chanreg:repo-root) (uiop:getcwd) (user-homedir-pathname)))
     (let ((path (merge-pathnames ".env.telegram" base)))
       (when (probe-file path)
         (with-open-file (f path)
@@ -27,28 +26,37 @@
                   do (return-from env-file-token
                        (string-trim " \"'" (subseq line 19)))))))))
 
-(defun jget (h k) (and (hash-table-p h) (gethash k h)))
-
 (defun token ()
   (or (getenv "TELEGRAM_BOT_TOKEN") (env-file-token)
       (error "chan-telegram: no TELEGRAM_BOT_TOKEN (env or .env.telegram)")))
 
+(defun curl-string (s)
+  "S as a double-quoted curl config value."
+  (with-output-to-string (o)
+    (write-char #\" o)
+    (loop for ch across s
+          do (when (member ch '(#\\ #\")) (write-char #\\ o))
+             (write-char ch o))
+    (write-char #\" o)))
+
 (defun api (method &optional payload)
-  "POST to the Bot API. Returns the parsed result or signals."
-  (let* ((json (and payload (com.inuoe.jzon:stringify payload)))
-         (args (list "curl" "-s" "--max-time" "30"
-                     (format nil "~a/bot~a/~a"
-                             (or (getenv "TELEGRAM_API_BASE") "https://api.telegram.org")
-                             (token) method))))
-    (when json
-      (setf args (append args (list "-H" "Content-Type: application/json"
-                                    "-d" json))))
-    (let ((out (with-output-to-string (s)
-                 (uiop:run-program args :output s))))
-      (let ((resp (com.inuoe.jzon:parse out)))
-        (unless (and (hash-table-p resp) (gethash "ok" resp))
-          (error "telegram api ~a failed: ~a" method out))
-        (gethash "result" resp)))))
+  "POST to the Bot API. Returns the parsed result or signals.
+The URL carries the token, so curl reads it from a stdin config (-K -),
+never argv: argv is world-readable through ps."
+  (let* ((url (format nil "~a/bot~a/~a"
+                      (or (getenv "TELEGRAM_API_BASE") "https://api.telegram.org")
+                      (token) method))
+         (config (format nil "url = ~a~%~@[header = \"Content-Type: application/json\"~%data-binary = ~a~%~]"
+                         (curl-string url)
+                         (and payload (curl-string (com.inuoe.jzon:stringify payload)))))
+         (out (uiop:run-program '("curl" "-s" "--max-time" "30" "-K" "-")
+                                :input (make-string-input-stream config)
+                                :output :string :external-format :utf-8
+                                :ignore-error-status t))
+         (resp (ignore-errors (com.inuoe.jzon:parse out))))
+    (unless (and (hash-table-p resp) (gethash "ok" resp))
+      (error "telegram api ~a failed: ~a" method out))
+    (gethash "result" resp)))
 
 
 ;;; --- chunking (P1 #5) ---------------------------------------------------------
@@ -80,15 +88,6 @@
       (maphash (lambda (k v) (setf (gethash k n) v)) h))
     n))
 
-(defun typing (chat-id)
-  "Best-effort typing indicator; never signals."
-  (ignore-errors
-    (api "sendChatAction"
-         (let ((h (make-hash-table :test 'equal)))
-           (setf (gethash "chat_id" h) chat-id
-                 (gethash "action" h) "typing")
-           h))))
-
 ;;; --- outbound ----------------------------------------------------------------
 
 (defun send-payload (method payload)
@@ -114,16 +113,12 @@ dispatcher's backoff takes over."
          (error "telegram/outbound needs text+chat_id"))
        (let* ((chunks (chunk-text text))
               (n (length chunks))
-              (base (make-hash-table :test 'equal)))
-         (setf (gethash "chat_id" base) chat)
-         ;; Markdown opt-in via payload; plain text by default - agent output
-         ;; with unbalanced _/* broke entities and poisoned retries.
-         (let ((pm (jget data "parse_mode")))
-           (when pm (setf (gethash "parse_mode" base) pm)))
-         (let ((thread (jget data "thread_id")))
-           (when thread (setf (gethash "message_thread_id" base) thread)))
-         (let ((reply-to (jget data "reply_to")))
-           (when reply-to (setf (gethash "reply_to_message_id" base) reply-to)))
+              ;; Markdown opt-in via payload; plain text by default - agent
+              ;; output with unbalanced _/* broke entities and poisoned retries.
+              (base (dict "chat_id" chat
+                          "parse_mode" (jget data "parse_mode")
+                          "message_thread_id" (jget data "thread_id")
+                          "reply_to_message_id" (jget data "reply_to"))))
          (loop for i from 1
                for chunk in chunks
                do (let ((h (copy-hash-table base)))
@@ -132,14 +127,13 @@ dispatcher's backoff takes over."
                     (send-payload "sendMessage" h))))
        t))
     ((equal topic "telegram/typing")
-     (typing (jget data "chat_id"))
+     ;; Best effort: a lost typing action is not worth a retry.
+     (ignore-errors (api "sendChatAction" (dict "chat_id" (jget data "chat_id")
+                                                "action" "typing")))
      t)
     ;; telegram/* also matches telegram/inbound, which this connector
     ;; publishes itself: nothing to deliver, so done - nil would retry forever.
     (t t)))
-
-(defun register! ()
-  (chanreg:register "telegram" "telegram/*" #'outbound-dispatch #'inbound-loop))
 
 ;;; --- inbound -------------------------------------------------------------------
 
@@ -149,29 +143,22 @@ dispatcher's backoff takes over."
   "Long-poll getUpdates; each message -> telegram/inbound. Never raises."
   (loop
     (handler-case
-        (let ((updates (api "getUpdates"
-                            (let ((h (make-hash-table :test 'equal)))
-                              (setf (gethash "timeout" h) 25
-                                    (gethash "offset" h) (1+ *offset*))
-                              h))))
-          (when (and (vectorp updates) (plusp (length updates)))
+        (let ((updates (api "getUpdates" (dict "timeout" 25 "offset" (1+ *offset*)))))
+          (when (vectorp updates)
             (loop for u across updates
+                  for msg = (jget u "message")
                   do (setf *offset* (max *offset* (or (jget u "update_id") 0)))
-                  (let ((msg (jget u "message")))
-                    (when msg
-                      (eventbus:publish "telegram/inbound"
-                                        (let ((h (make-hash-table :test 'equal)))
-                                          (setf (gethash "update_id" h) (jget u "update_id")
-                                                (gethash "chat_id" h)
-                                                (jget (jget msg "chat") "id")
-                                                (gethash "text" h) (jget msg "text")
-                                                (gethash "from" h) (jget msg "from")
-                                                (gethash "message_id" h) (jget msg "message_id"))
-                                          h)))))))
+                     (when msg
+                       (eventbus:publish "telegram/inbound"
+                                         (dict "update_id" (jget u "update_id")
+                                               "chat_id" (jget msg "chat" "id")
+                                               "text" (jget msg "text")
+                                               "from" (jget msg "from")
+                                               "message_id" (jget msg "message_id")))))))
       (error (e)
         (format *error-output* "chan-telegram inbound: ~a~%" e)
         (sleep 5)))))
 
 ;;; --- self-registration -------------------------------------------------------
 
-(register!)
+(chanreg:register "telegram" "telegram/*" #'outbound-dispatch #'inbound-loop)

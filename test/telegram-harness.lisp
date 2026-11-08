@@ -48,6 +48,7 @@
 (defvar *msg-id* 9000)
 (defvar *send-rule* (constantly nil)
   "(lambda (payload)) -> nil to accept a sendMessage, or an error description.")
+(defvar *lm-requests* nil "Chat-completion request bodies, newest first.")
 (defvar *lm-scripts* nil
   "(marker . steps): a task containing MARKER gets STEPS, one per LM call.
 Step plists: (:sleep s :tool cmd) | (:sleep s :answer text) | (:status code).")
@@ -93,6 +94,7 @@ Step plists: (:sleep s :tool cmd) | (:sleep s :answer text) | (:status code).")
        (values 200 (obj "ok" t "result" t)))))
 
 (defun lm-route (req)
+  (sb-thread:with-mutex (*lock*) (push req *lm-requests*))
   (let* ((msgs (coerce (or (jget req "messages") #()) 'list))
          (task (format nil "~{~a~}" (loop for m in msgs
                                           when (equal (jget m "role") "user")
@@ -195,10 +197,7 @@ Step plists: (:sleep s :tool cmd) | (:sleep s :answer text) | (:status code).")
   (setf *dir* (uiop:ensure-directory-pathname
                (format nil "~a/mini-agent-tg-~a" (string-right-trim "/" (or (uiop:getenv "TMPDIR") "/tmp"))
                        (get-universal-time))))
-  (ensure-directories-exist *dir*)
-  ;; agent-responder loads src/agent.lisp from its cwd; eventd puts the bus there
-  (sb-posix:symlink (namestring (merge-pathnames "src/" *repo*))
-                    (string-right-trim "/" (namestring (merge-pathnames "src/" *dir*))))
+  (ensure-directories-exist *dir*)   ; eventd's cwd: bus, deliveries, state/
   (write-file (merge-pathnames ".env.agent" *dir*)
               (if *live*
                   (uiop:read-file-string (merge-pathnames ".env.agent" *repo*))
@@ -229,7 +228,7 @@ Step plists: (:sleep s :tool cmd) | (:sleep s :answer text) | (:status code).")
                                                        ok)
                                              (count-if (lambda (c) (jget (third c) "reply_to_message_id")) ok))))
                                 (progn (unless (sends 999) (say 999 "[[probe]] ready?"))
-                                       (sleep 10)   ; ack takes ~2-4s; don't double-probe
+                                       (sleep 10)   ; don't double-probe a slow boot
                                        nil))))
     (error "daemon not answering the probe; see ~a" (merge-pathnames "eventd.err" *dir*))))
 
@@ -320,10 +319,11 @@ Step plists: (:sleep s :tool cmd) | (:sleep s :answer text) | (:status code).")
                          (count-if (lambda (c) (> (first c) (+ t-ans 5))) typing)))
           (check "answer sent exactly once"
                  (= 1 (count-if (lambda (c) (search "ANSWER-BASIC" (text-of c))) (sends 101 :after t0))))
+          (check "answer is the model's text alone (no step trace)"
+                 (string= (text-of ans) "ANSWER-BASIC: harness-basic seen")
+                 (text-of ans))
           (ux "time to ack" (and ack (- (first ack) t0)) 1.0)
-          (ux "time to answer beyond LM time (7s)" (- t-ans t0 7) 3.0)
-          (format t "  UX   answer carries the [step N] trace: ~:[no~;yes~]~%"
-                  (search "[step" (text-of ans)))))
+          (ux "time to answer beyond LM time (7s)" (- t-ans t0 7) 3.0)))
       (transcript 101 t0))))
 
 (defscenario :progress "multi-step run sends a progress ping"
@@ -338,6 +338,8 @@ Step plists: (:sleep s :tool cmd) | (:sleep s :answer text) | (:status code).")
                                   (sends 102 :after t0))))
         (check "progress ping before the answer"
                (and ans pings (< (first (first pings)) (first ans))))
+        (check "no ping after the answer"
+               (and ans (notany (lambda (p) (> (first p) (first ans))) pings)))
         (check "pings throttled (<=1 for a 7s run)" (<= (length pings) 1)
                (format nil "~a pings" (length pings)))))
     (transcript 102 t0)))
@@ -434,8 +436,12 @@ Step plists: (:sleep s :tool cmd) | (:sleep s :answer text) | (:status code).")
       (check "answer ends exactly as the model wrote it"
              (and ans (uiop:string-suffix-p (text-of ans) "tonight, not noon"))
              (and ans (format nil "~s" (subseq (text-of ans) (max 0 (- (length (text-of ans)) 20))))))
-      (check "tool output reaches the model intact (step trace shows the command)"
-             (and ans (search "$ printf fun" (text-of ans)))))
+      (check "tool output reaches the model intact"
+             (some (lambda (req)
+                     (some (lambda (m) (and (equal (jget m "role") "tool")
+                                            (equal (jget m "content") "fun")))
+                           (coerce (or (jget req "messages") #()) 'list)))
+                   (sb-thread:with-mutex (*lock*) *lm-requests*))))
     (transcript 107 t0)))
 
 (defscenario :live "real LM round trip (HARNESS_LIVE=1)"

@@ -1,57 +1,41 @@
-# Telegram UX improvement plan
+# Telegram UX plan
 
 Grounded in `channels.d/telegram.lisp`, `channels.d/agent-responder.lisp`,
-bus topics (`telegram/inbound|outbound`, `agent/*`). Ordered by user-visible
-impact per unit of work. P0/P1 are small, local diffs; P2/P3 slightly larger.
+`channels.d/progress-notifier.lisp` and the bus topics they share
+(`telegram/inbound|outbound|typing`, `agent/*`).
 
-## P0 -- feel alive (silence is the #1 UX bug)
+## Shipped (P0/P1)
 
-1. **Ack on accept.** `spawn-task` succeeds silently when queue is empty;
-   user stares at nothing for up to 240s (`*wall-clock*`). Reply
-   `â½ working: <task, truncated 60>` on *every* accept, not only when queued
-   behind. One line in `queue-push`/`spawn-task`.
-2. **Typing indicator.** `sendChatAction {chat_id, chat_action:"typing"}`
-   lasts ~5s. Worker loop already wakes every second -- emit action when
-   `queue-pop` returns a job, and re-emit on a 4s heartbeat while it runs.
-   New tiny helper in telegram.lisp next to `api`.
-3. **Thread replies.** Inbound already captures `message_id` but `reply`
-   never sets `reply_to_message_id` -- answers float unlinked in groups.
-   Add `reply_to` passthrough in `outbound-dispatch` + set it in `reply`.
-4. **Fix warning markup.** Error path sends `"&#9888; ~a"` while
-   `parse_mode` is Markdown -> literal `&#9888;` in chat. Use `â ` or an
-   HTML `parse_mode` consistently (see P1 #6).
-
-## P1 -- visible-surface reliability
-
-5. **4096 chunking.** Telegram rejects longer texts; agent answers are
-   unbounded. Split on paragraph/blank-line boundaries in
-   `outbound-dispatch`, send sequentially, suffix `(2/3)`.
-6. **Markdown fallback.** Bad markdown -> API error -> eventd retry loop ->
-   duplicate-looking silence. Try `parse_mode:Markdown`, on failure resend
-   plain. Do it once inside the sendMessage branch; benefits all senders.
-7. **Progress pings from agent telemetry.** `agent/step` events already
-   flow to the bus for free. New `channels.d/progress-notifier.lisp` boot
-   hook: subscribe, throttle to one `â¦step N: $cmd` ping per 45s per chat.
-   Zero responder changes; delete the file to turn off.
+1. **Ack on accept** -- `working: <task>` or `queued (n/3): <task>` within
+   ~0.2s (consumers and the dispatcher wake on publish, not on a 2s poll).
+2. **Typing indicator** -- `telegram/typing` every 4s while a task runs; the
+   heartbeat is joined before the answer goes out.
+3. **Threaded replies** -- answers carry `reply_to` the user's message.
+4. **Plain-text errors** -- `⚠ agent error: ...`, no markup entities.
+5. **4096 chunking** -- paragraph-boundary splits, `(i/n)` suffixes.
+6. **Send fallback** -- one retry without `parse_mode`/`reply_to`, then the
+   dispatcher's backoff; plain text by default.
+7. **Progress pings** -- `… step N: cmd`, at most one per 45s per chat,
+   never after the answer; chat comes from the run's `agent/step` payload.
+8. **Answer only** -- the reply is `mini-agent:run`'s value, no step trace.
 
 ## P2 -- commandable bot (small parser in `handle`)
 
-8. `/status` -- queue depth, worker alive, current task age, model name
+9. `/status` -- queue depth, worker busy, model name
    (all already in responder state).
-9. `/cancel` -- set a cancel flag the worker checks between tasks;
+10. `/cancel` -- set a cancel flag the worker checks between tasks;
    kills queued entries, flags the running one. (Interrupting mid-agent is
    P3: agent loop would need a check between steps in `src/agent.lisp`.)
-10. `/memory` -- dump `state/<chat>.md` tail; `/forget` -- truncate it.
+11. `/memory` -- dump `state/<chat>.md` tail; `/forget` -- truncate it.
     Memory is currently opaque to the user who owns it.
-11. Accept `/cmd@botname` suffix; ignore bare `/` unknown commands with a
+12. Accept `/cmd@botname` suffix; ignore bare `/` unknown commands with a
     one-line hint instead of feeding them to the agent as tasks.
 
 ## P3 -- nicer output & group semantics
 
-12. **Tame the step trace.** `run-agent` keeps `[step N] $ cmd` lines
-    (strips only leading loader noise). Render them as italic/mono preamble
-    or drop by default, answer first.
-13. **editMessageText instead of message spam.** Send one `workingâ¦`
+12. ~~**Tame the step trace.**~~ Done: the reply is `mini-agent:run`'s
+    return value, the model's text alone; steps surface only as progress pings.
+13. **editMessageText instead of message spam.** Send one `working…`
     placeholder, edit with progress, edit to final answer. Add an
     `telegram/edit` topic (same `api` helper) -- one message per task.
 14. **Group memory scoping.** `state/<chat>.md` is communal in groups.
@@ -67,6 +51,6 @@ impact per unit of work. P0/P1 are small, local diffs; P2/P3 slightly larger.
   queue acks and verbatim text; prints per-chat transcripts and UX timings
   (ack target <1s). `HARNESS_LIVE=1` swaps in the real LM from `.env.agent`.
 - Still manual: `/status` `/cancel` `/memory` (P2, not built).
-- No core edits required for P0-P2: telegram.lisp + agent-responder.lisp
-  (+ one new optional hook file). `chanreg` re-registers by name, so
+- No core edits required for P2: hooks are `eventbus:tail` consumers in
+  `channels.d/`; `chanreg` re-registers channels and hooks by name, so
   hot-reload is drop-in.

@@ -98,12 +98,13 @@ need no extra tool. Roots: `MINI_AGENT_SKILLS_PATH` first, then the repo's
 ## Repository layout
 
 ```
-src/    agent.lisp eventbus.lisp eventd.lisp run.lisp agent-harbor.py
+src/    agent.lisp eventbus.lisp eventd.lisp chanreg.lisp run.lisp agent-harbor.py
+channels.d/ telegram.lisp agent-responder.lisp echo-responder.lisp progress-notifier.lisp
 skills/ <name>/SKILL.md — progressive-disclosure instructions
 test/   smoke.sh eventbus-test.lisp skills-test.lisp dispatch-test.lisp
         agent-test.lisp telegram-harness.lisp
 eval/   o11y-report.lisp
-docs/   reference.md operations.md
+docs/   reference.md operations.md telegram-ux.md
 ``` 
 (one file per concern; `run.lisp`/adapters always resolved relative to their own location)
 
