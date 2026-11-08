@@ -1,6 +1,10 @@
 ;;;; skills-test.lisp — skill discovery regression. No LM needed.
 ;;;;   timeout 60 sbcl --script test/skills-test.lisp   ; exit 0 = pass
 (require :uiop)
+(require :sb-posix)
+;; agent.lisp runs main at load when MINI_AGENT_AUTORUN is set (smoke.sh and
+;; run.lisp children export it); main quits 0 before any check would run.
+(sb-posix:unsetenv "MINI_AGENT_AUTORUN")
 (load (merge-pathnames "../src/agent.lisp" *load-truename*))
 (in-package :mini-agent)
 
@@ -24,6 +28,12 @@
 (check "folded block joined"
        (string= (fm "description" (format nil "---~%name: a~%description: >~%  one~%  two~%---~%"))
                 "one two"))
+(check "literal block keeps newlines"
+       (string= (fm "description" (format nil "---~%name: a~%description: |~%  one~%  two~%---~%"))
+                (format nil "one~%two")))
+(check "UTF-8 BOM before the fence tolerated"
+       (string= (fm "name" (format nil "~C---~%name: bom~%description: d~%---~%" (code-char #xFEFF)))
+                "bom"))
 (check "nested map keys not hoisted"
        (null (fm "rex-stub" (format nil "---~%name: a~%metadata:~%  rex-stub: \"2\"~%---~%"))))
 (check "CRLF fences"

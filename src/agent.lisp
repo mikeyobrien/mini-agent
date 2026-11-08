@@ -101,7 +101,9 @@
                                    *default-pathname-defaults*))))
     (when (probe-file path)
       (ignore-errors
-        (load path)
+        ;; Already loaded (eventd hosts us): reloading re-runs its quickloads,
+        ;; whose chatter lands in the captured stdout = the user's reply.
+        (unless (find-package :eventbus) (load path))
         (setf *eventbus* t)
         (funcall (find-symbol "ENSURE-SCHEMA" :eventbus))))))
 
@@ -269,7 +271,7 @@ Symbols become downcased names sans colon; strings pass through."
          :error-output output
          :input nil
          :timeout *step-timeout*)
-        (truncate-output (string-right-trim "\n" (get-output-stream-string output))))
+        (truncate-output (string-right-trim '(#\Newline) (get-output-stream-string output))))
     (error (e) (format nil "Error: ~a" e))))
 
 (defun run (task)
@@ -378,12 +380,15 @@ Symbols become downcased names sans colon; strings pass through."
   "Top-level `key: value` pairs between leading --- fences, as an alist of
 strings. Handles quoted scalars and folded (>) / literal (|) blocks; nested
 maps are skipped. NIL when there is no frontmatter."
-  (let ((lines (uiop:split-string text :separator '(#\Newline))))
+  (let ((lines (uiop:split-string (string-left-trim (list (code-char #xFEFF)) text)
+                                  :separator '(#\Newline))))
     (when (string= (string-right-trim '(#\Return) (or (first lines) "")) "---")
-      (let ((pairs '()) (block-key nil) (block-lines '()))
+      (let ((pairs '()) (block-key nil) (block-sep " ") (block-lines '()))
         (flet ((flush ()
                  (when block-key
-                   (push (cons block-key (format nil "~{~a~^ ~}" (reverse block-lines))) pairs)
+                   (push (cons block-key (format nil (concatenate 'string "~{~a~^" block-sep "~}")
+                                                 (reverse block-lines)))
+                         pairs)
                    (setf block-key nil block-lines '()))))
           (dolist (raw (rest lines))
             (let ((line (string-right-trim '(#\Return #\Space) raw)))
@@ -398,7 +403,8 @@ maps are skipped. NIL when there is no frontmatter."
                         (val (string-trim " " (subseq line (1+ colon)))))
                    (cond
                      ((member val '(">" "|" ">-" "|-") :test #'string=)
-                      (setf block-key key))
+                      (setf block-key key
+                            block-sep (if (char= (char val 0) #\|) (string #\Newline) " ")))
                      ((string= val "") nil) ; nested map: not ours
                      (t
                       (when (and (>= (length val) 2)
