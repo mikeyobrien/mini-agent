@@ -20,12 +20,13 @@
        (find-symbol name :agent-responder)))
 
 (defun throttled? (chat)
+  "T if CHAT was pinged under *every-seconds* ago; else records now, NIL."
   ;; single consumer thread: no lock needed
   (let ((now (get-universal-time))
         (last (gethash chat *last-ping*)))
-    (when (or (null last) (>= (- now last) *every-seconds*))
-      (setf (gethash chat *last-ping*) now)
-      nil)))
+    (if (or (null last) (>= (- now last) *every-seconds*))
+        (progn (setf (gethash chat *last-ping*) now) nil)
+        t)))
 
 (defun ping! (chat step cmd)
   (let ((pub (find-symbol "PUBLISH" :eventbus)))

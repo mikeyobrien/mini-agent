@@ -28,6 +28,9 @@
 
 (defun jget (h k) (and (hash-table-p h) (gethash k h)))
 
+(defparameter +ws+ '(#\Space #\Tab #\Newline #\Return)
+  "Whitespace for STRING-TRIM. A literal \" \\n\" is space + the letter n.")
+
 (defun env-path ()
   (merge-pathnames ".env.agent" (uiop:getcwd)))
 
@@ -78,7 +81,7 @@
                                   (< (search "[step" raw) 40))
                              (subseq raw (search "[step" raw))
                              raw))
-               (text (string-trim " \n\t" stripped)))
+               (text (string-trim +ws+ stripped)))
           (if (plusp (length text))
               (values t text)
               (values nil "agent returned empty output"))))
@@ -139,7 +142,7 @@
 
 (defun memory-preamble (chat-id task)
   (let ((mem (and (probe-file (state-path chat-id))
-                  (string-trim " \n\r" (or (state-tail chat-id) "")))))
+                  (string-trim +ws+ (or (state-tail chat-id) "")))))
     (if (plusp (length mem))
         (format nil
 "Your persistent memory: state/~a.md (tail below). Edit it freely with any
@@ -164,6 +167,9 @@ Task: ~a"
 (defparameter *queue* nil)            ; alist (chat-id . task), front = next
 (defparameter *queue-max* 3)
 (defparameter *worker-thread* nil)
+(defparameter *running* nil
+  "Job the worker popped last; NIL once it polls an empty queue. Guarded by
+   *queue-lock*: a task arriving behind it is queued, not 'working'.")
 (defparameter *current-chat* nil
   "Chat of the task in flight; read by progress-notifier.")
 
@@ -175,7 +181,7 @@ Task: ~a"
         (progn
           ;; P0 ack on EVERY accept: user must never stare at silence.
           (reply chat-id
-                 (if (plusp (length *queue*))
+                 (if (or *queue* *running*)
                      (format nil "queued (~a/~a): ~a" (1+ (length *queue*)) *queue-max*
                              (subseq task 0 (min 60 (length task))))
                      (format nil "⚠ working: ~a" (subseq task 0 (min 60 (length task))))))
@@ -184,7 +190,7 @@ Task: ~a"
 
 (defun queue-pop ()
   (sb-thread:with-mutex (*queue-lock*)
-    (pop *queue*)))
+    (setf *running* (pop *queue*))))
 
 (defvar *typing-thread* nil)
 
@@ -202,7 +208,7 @@ Task: ~a"
 (defun stop-typing ()
   (when (boundp '*typing-thread*)
     (when (and *typing-thread* (sb-thread:thread-alive-p *typing-thread*))
-      (ignore-errors (sb-thread:terminate-thread *typing-thread)))
+      (ignore-errors (sb-thread:terminate-thread *typing-thread*)))
     (setf *typing-thread* nil)))
 
 (defun run-agent-bounded (full-task)
@@ -226,8 +232,11 @@ and swallow replies. Worst case ~6*(60+120)s; worker blocked but alive."
                              (start-typing chat-id)
                              (multiple-value-bind (ok text)
                                  (run-agent-bounded
-                                  (format nil "~a~%Work in /Users/rook/mini-agent."
-                                          (memory-preamble chat-id task))))
+                                  ;; the daemon's cwd: the repo in production,
+                                  ;; a scratch dir under test/telegram-harness
+                                  (format nil "~a~%Work in ~a."
+                                          (memory-preamble chat-id task)
+                                          (namestring (uiop:getcwd))))
                                (stop-typing)
                                (reply chat-id
                                       (if ok text (format nil "⚠ ~a" text))
@@ -235,9 +244,9 @@ and swallow replies. Worst case ~6*(60+120)s; worker blocked but alive."
                            (sleep 1)))
                    (error (e)
                      (stop-typing)
-                     (reply *current-chat* (format nil "&#9888; worker error: ~a" e))
+                     (reply *current-chat* (format nil "⚠ worker error: ~a" e))
                      (format *error-output* "agent-worker: ~a~%" e)
-                     (sleep 2))))
+                     (sleep 2)))))
              :name "agent-worker")))))
 
 (defun spawn-task (chat-id task &optional reply-to)
@@ -248,7 +257,7 @@ and swallow replies. Worst case ~6*(60+120)s; worker blocked but alive."
   ;; Plain text converses with the agent (memory+queue, bounded). "! task"
   ;; forces a work task; "echo ..." keeps the legacy mirror for probes.
   (let* ((data (getf event :data))
-         (text (and (jget data "text") (string-trim " \n\r" (jget data "text"))))
+         (text (and (jget data "text") (string-trim +ws+ (jget data "text"))))
          (chat (jget data "chat_id")))
     (when (and text chat (plusp (length text)))
       (let ((msg-id (jget data "message_id")))
@@ -307,15 +316,15 @@ and swallow replies. Worst case ~6*(60+120)s; worker blocked but alive."
 (defun boot ()
   (setf *env* (load-env))
   (unless (and (env-lookup "MINI_AGENT_BASE_URL") (env-lookup "MINI_AGENT_MODEL"))
-    (format *error-output* "agent-responder: no .env.agent, hook idle")
+    (format *error-output* "agent-responder: no .env.agent, hook idle~%")
     (return-from boot))
   (unless (probe-file (merge-pathnames "src/agent.lisp" (uiop:getcwd)))
-    (format *error-output* "agent-responder: agent.lisp not found, hook idle")
+    (format *error-output* "agent-responder: agent.lisp not found, hook idle~%")
     (return-from boot))
   (load (merge-pathnames "src/agent.lisp" (uiop:getcwd)))
   (ensure-seen)
   (setf *cursor* (eventbus:max-id "telegram/inbound"))
-  (format *error-output* "agent-responder: up, model=~a cursor=~a"
+  (format *error-output* "agent-responder: up, model=~a cursor=~a~%"
           (env-lookup "MINI_AGENT_MODEL") *cursor*)
   (loop!))
 

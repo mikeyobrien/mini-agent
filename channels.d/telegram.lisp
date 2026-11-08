@@ -3,6 +3,7 @@
 ;;;;   payload: {"text": "...", "chat_id": N}   (thread/thread_id optional)
 ;;;; Inbound: getUpdates long-poll -> publish "telegram/inbound".
 ;;;; Token: TELEGRAM_BOT_TOKEN env, or .env.telegram next to the daemon.
+;;;; TELEGRAM_API_BASE overrides https://api.telegram.org (test harness).
 
 (defpackage :chan-telegram
   (:use :cl)
@@ -26,6 +27,8 @@
                   do (return-from env-file-token
                        (string-trim " \"'" (subseq line 19)))))))))
 
+(defun jget (h k) (and (hash-table-p h) (gethash k h)))
+
 (defun token ()
   (or (getenv "TELEGRAM_BOT_TOKEN") (env-file-token)
       (error "chan-telegram: no TELEGRAM_BOT_TOKEN (env or .env.telegram)")))
@@ -34,7 +37,8 @@
   "POST to the Bot API. Returns the parsed result or signals."
   (let* ((json (and payload (com.inuoe.jzon:stringify payload)))
          (args (list "curl" "-s" "--max-time" "30"
-                     (format nil "https://api.telegram.org/bot~a/~a"
+                     (format nil "~a/bot~a/~a"
+                             (or (getenv "TELEGRAM_API_BASE") "https://api.telegram.org")
                              (token) method))))
     (when json
       (setf args (append args (list "-H" "Content-Type: application/json"
@@ -130,7 +134,9 @@ dispatcher's backoff takes over."
     ((equal topic "telegram/typing")
      (typing (jget data "chat_id"))
      t)
-    (t nil)))
+    ;; telegram/* also matches telegram/inbound, which this connector
+    ;; publishes itself: nothing to deliver, so done - nil would retry forever.
+    (t t)))
 
 (defun register! ()
   (chanreg:register "telegram" "telegram/*" #'outbound-dispatch #'inbound-loop))
@@ -161,10 +167,10 @@ dispatcher's backoff takes over."
                                                 (gethash "text" h) (jget msg "text")
                                                 (gethash "from" h) (jget msg "from")
                                                 (gethash "message_id" h) (jget msg "message_id"))
-                                          h)))))
+                                          h)))))))
       (error (e)
         (format *error-output* "chan-telegram inbound: ~a~%" e)
-        (sleep 5)))))))
+        (sleep 5)))))
 
 ;;; --- self-registration -------------------------------------------------------
 

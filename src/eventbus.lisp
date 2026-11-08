@@ -5,7 +5,7 @@
   (unless (find-package :sqlite)
     (let ((setup (or (probe-file (merge-pathnames ".quicklisp/setup.lisp" (user-homedir-pathname)))
                      (probe-file (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))))
-      (unless setup (error "need quicklisp at ~/.quicklisp or ~/quicklisp"))
+      (unless setup (error "need quicklisp at ~~/.quicklisp or ~~/quicklisp"))
       (load setup)))
   (when (find-package :ql)
     (funcall (find-symbol "QUICKLOAD" :ql) :sqlite))
